@@ -456,14 +456,34 @@ std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sig
     assert(img.channels == 1 || img.channels == 3);
 
     const Image& input = img.channels == 1 ? img : rgb_to_grayscale(img);
+    auto start = std::chrono::high_resolution_clock::now();
     ScaleSpacePyramid gaussian_pyramid = generate_gaussian_pyramid(input, sigma_min, num_octaves,
                                                                    scales_per_octave);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+    std::cout << "Time to generate gaussian pyramid: " << elapsed.count() << "s" << std::endl;
+
+    start = std::chrono::high_resolution_clock::now();
     ScaleSpacePyramid dog_pyramid = generate_dog_pyramid(gaussian_pyramid);
+    end = std::chrono::high_resolution_clock::now();
+    elapsed = end - start;
+    std::cout << "Time to generate difference of gaussian pyramid: " << elapsed.count() << "s" << std::endl;
+
+    start = std::chrono::high_resolution_clock::now();
     std::vector<Keypoint> tmp_kps = find_keypoints(dog_pyramid, contrast_thresh, edge_thresh);
+    end = std::chrono::high_resolution_clock::now();
+    elapsed = end - start;
+    std::cout << "Time to find valid keypoints: " << elapsed.count() << "s" << std::endl;
+
+    start = std::chrono::high_resolution_clock::now();
     ScaleSpacePyramid grad_pyramid = generate_gradient_pyramid(gaussian_pyramid);
+    end = std::chrono::high_resolution_clock::now();
+    elapsed = end - start;
+    std::cout << "Time to generate gradient pyramid: " << elapsed.count() << "s" << std::endl;
     
     std::vector<Keypoint> kps;
 
+    start = std::chrono::high_resolution_clock::now();
     for (Keypoint& kp_tmp : tmp_kps) {
         std::vector<float> orientations = find_keypoint_orientations(kp_tmp, grad_pyramid,
                                                                      lambda_ori, lambda_desc);
@@ -473,6 +493,10 @@ std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sig
             kps.push_back(kp);
         }
     }
+    end = std::chrono::high_resolution_clock::now();
+    elapsed = end - start;
+    std::cout << "Time to find key points orientation and compute descriptor: " << elapsed.count() << "s" << std::endl;
+
     return kps;
 }
 
