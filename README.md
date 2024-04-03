@@ -15,8 +15,8 @@ Find keypoints, match features in two images and save the result:
 
 int main()
 {
-    Image img("./../imgs/book_rotated.jpg");
-    Image img2("./../imgs/book_in_scene.jpg");
+    Image img("imgs/book_rotated.jpg");
+    Image img2("imgs/book_in_scene.jpg");
     img = rgb_to_grayscale(img);
     img2 = rgb_to_grayscale(img2);
     std::vector<sift::Keypoint> kps1 = sift::find_keypoints_and_descriptors(img);
@@ -34,24 +34,22 @@ Result:
 ## Build and run the examples
 ### Build
 ```bash
-$ mkdir build/ && cd build && cmake .. && make
+$ make all
 ```
-The executables will be in sift-cpp/bin/.
+The executables will be in root directory
 
 ### Run
 Find image keypoints, draw them and save the result:
 ```bash
-$ cd bin/ && ./find_keypoints ../imgs/book_rotated.jpg
+$ ./find_keypoints /imgs/book_rotated.jpg result.jpg
 ```
-Input images can be .jpg or .png. Result image is saved as result.jpg
 
 ![Keypoints result](./imgs/book_keypoints.jpg)
 
 Find keypoints in two images and match them, draw matches and save the result:
 ```bash
-$ cd bin/ && ./match_features ../imgs/book_rotated.jpg ../imgs/book_in_scene.jpg
+$ ./match_features imgs/book_rotated.jpg imgs/book_in_scene.jpg result.jpg
 ```
-Result image is saved as result.jpg
 
 ## Useful links
 

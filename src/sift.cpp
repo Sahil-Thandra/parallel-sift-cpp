@@ -155,7 +155,7 @@ std::tuple<float, float, float> fit_quadratic(Keypoint& kp,
     float interpolated_extrema_val = img.get_pixel(x, y, 0)
                                    + 0.5*(g1*offset_s + g2*offset_x + g3*offset_y);
     kp.extremum_val = interpolated_extrema_val;
-    return {offset_s, offset_x, offset_y};
+    return std::make_tuple(offset_s, offset_x, offset_y);
 }
 
 bool point_is_on_edge(const Keypoint& kp, const std::vector<Image>& octave, float edge_thresh=C_EDGE)
@@ -193,7 +193,10 @@ bool refine_or_discard_keypoint(Keypoint& kp, const std::vector<Image>& octave,
     int k = 0;
     bool kp_is_valid = false; 
     while (k++ < MAX_REFINEMENT_ITERS) {
-        auto [offset_s, offset_x, offset_y] = fit_quadratic(kp, octave, kp.scale);
+        std::tuple<float, float, float> result = fit_quadratic(kp, octave, kp.scale);
+        float offset_s = std::get<0>(result);
+        float offset_x = std::get<1>(result);
+        float offset_y = std::get<2>(result);
 
         float max_offset = std::max({std::abs(offset_s),
                                      std::abs(offset_x),
@@ -406,7 +409,7 @@ void compute_keypoint_descriptor(Keypoint& kp, float theta,
 {
     float pix_dist = MIN_PIX_DIST * std::pow(2, kp.octave);
     const Image& img_grad = grad_pyramid.octaves[kp.octave][kp.scale];
-    float histograms[N_HIST][N_HIST][N_ORI] = {0};
+    float histograms[N_HIST][N_HIST][N_ORI] = {{{0}}};
 
     //find start and end coords for loops over image patch
     float half_size = std::sqrt(2)*lambda_desc*kp.sigma*(N_HIST+1.)/N_HIST;
