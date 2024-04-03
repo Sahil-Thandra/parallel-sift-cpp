@@ -1,0 +1,9 @@
+# Ignore object files
+*.o
+
+# Ignore executables
+match_features
+find_keypoints
+
+# Ignore vscode scratch
+*.vscode/
