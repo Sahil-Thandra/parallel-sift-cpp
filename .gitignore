@@ -2,8 +2,8 @@
 *.o
 
 # Ignore executables
-match_features
-find_keypoints
+match_features*
+find_keypoints*
 
 # Ignore vscode scratch
 *.vscode/
