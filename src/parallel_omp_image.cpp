@@ -1,15 +1,16 @@
+#include <omp.h>
 #include <cmath>
 #include <iostream>
 #include <cassert>
 #include <utility>
 
-#include "image.hpp"
+#include "parallel_omp_image.hpp"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-namespace image {
+namespace parallel_omp_image {
 
 Image::Image(std::string file_path)
 {
@@ -181,6 +182,8 @@ Image Image::resize(int new_w, int new_h, Interpolation method) const
 {
     Image resized(new_w, new_h, this->channels);
     float value = 0;
+    // #pragma omp parallel for collapse(3) num_threads(16)
+    // causing correctness issue
     for (int x = 0; x < new_w; x++) {
         for (int y = 0; y < new_h; y++) {
             for (int c = 0; c < resized.channels; c++) {
@@ -270,6 +273,7 @@ Image gaussian_blur(const Image& img, float sigma)
     Image filtered(img.width, img.height, 1);
 
     // convolve vertical
+    #pragma omp parallel for collapse(2) num_threads(16)
     for (int x = 0; x < img.width; x++) {
         for (int y = 0; y < img.height; y++) {
             float sum = 0;
@@ -281,6 +285,7 @@ Image gaussian_blur(const Image& img, float sigma)
         }
     }
     // convolve horizontal
+    #pragma omp parallel for collapse(2) num_threads(16)
     for (int x = 0; x < img.width; x++) {
         for (int y = 0; y < img.height; y++) {
             float sum = 0;
@@ -331,5 +336,5 @@ void draw_line(Image& img, int x1, int y1, int x2, int y2)
     }
 }
 
-} // namespace image
+} // namespace parallel_omp_image
 

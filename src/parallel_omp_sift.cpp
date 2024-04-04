@@ -1,4 +1,5 @@
 #define _USE_MATH_DEFINES
+#include <omp.h>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -8,12 +9,13 @@
 #include <tuple>
 #include <cassert>
 
-#include "sift.hpp"
-#include "image.hpp"
+#include "parallel_omp_sift.hpp"
+#include "parallel_omp_image.hpp"
 
-using namespace image;
+using namespace parallel_omp_image;
 
-namespace sift {
+
+namespace parallel_omp_sift {
 
 ScaleSpacePyramid generate_gaussian_pyramid(const Image& img, float sigma_min,
                                             int num_octaves, int scales_per_octave)
@@ -43,6 +45,7 @@ ScaleSpacePyramid generate_gaussian_pyramid(const Image& img, float sigma_min,
         imgs_per_octave,
         std::vector<std::vector<Image>>(num_octaves)
     };
+    
     for (int i = 0; i < num_octaves; i++) {
         pyramid.octaves[i].reserve(imgs_per_octave);
         pyramid.octaves[i].push_back(std::move(base_img));
@@ -66,6 +69,7 @@ ScaleSpacePyramid generate_dog_pyramid(const ScaleSpacePyramid& img_pyramid)
         img_pyramid.imgs_per_octave - 1,
         std::vector<std::vector<Image>>(img_pyramid.num_octaves)
     };
+    // #pragma omp parallel for num_threads(8) // no speedup
     for (int i = 0; i < dog_pyramid.num_octaves; i++) {
         dog_pyramid.octaves[i].reserve(dog_pyramid.imgs_per_octave);
         for (int j = 1; j < img_pyramid.imgs_per_octave; j++) {
@@ -173,7 +177,6 @@ bool point_is_on_edge(const Keypoint& kp, const std::vector<Image>& octave, floa
     float det_hessian = h11*h22 - h12*h12;
     float tr_hessian = h11 + h22;
     float edgeness = tr_hessian*tr_hessian / det_hessian;
-
     if (edgeness > std::pow(edge_thresh+1, 2)/edge_thresh)
         return true;
     else
@@ -224,10 +227,13 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
                                      float edge_thresh)
 {
     std::vector<Keypoint> keypoints;
+    // #pragma omp parallel for num_threads(16) // memory corruption
     for (int i = 0; i < dog_pyramid.num_octaves; i++) {
         const std::vector<Image>& octave = dog_pyramid.octaves[i];
+        // #pragma omp parallel for num_threads(16)
         for (int j = 1; j < dog_pyramid.imgs_per_octave-1; j++) {
             const Image& img = octave[j];
+            // #pragma omp parallel for collapse(2) num_threads(16) // memory corruption
             for (int x = 1; x < img.width-1; x++) {
                 for (int y = 1; y < img.height-1; y++) {
                     if (std::abs(img.get_pixel(x, y, 0)) < 0.8*contrast_thresh) {
@@ -256,13 +262,16 @@ ScaleSpacePyramid generate_gradient_pyramid(const ScaleSpacePyramid& pyramid)
         pyramid.imgs_per_octave,
         std::vector<std::vector<Image>>(pyramid.num_octaves)
     };
+    #pragma omp parallel for num_threads(16) // very minimal speed up, sometimes causing segfault
     for (int i = 0; i < pyramid.num_octaves; i++) {
         grad_pyramid.octaves[i].reserve(grad_pyramid.imgs_per_octave);
         int width = pyramid.octaves[i][0].width;
         int height = pyramid.octaves[i][0].height;
+        #pragma omp parallel for num_threads(16)
         for (int j = 0; j < pyramid.imgs_per_octave; j++) {
             Image grad(width, height, 2);
             float gx, gy;
+            // #pragma omp parallel for collapse(2) num_threads(16) // increased time, maybe try different affinity
             for (int x = 1; x < grad.width-1; x++) {
                 for (int y = 1; y < grad.height-1; y++) {
                     gx = (pyramid.octaves[i][j].get_pixel(x+1, y, 0)
@@ -320,6 +329,7 @@ std::vector<float> find_keypoint_orientations(Keypoint& kp,
     int y_end = std::round((kp.y + patch_radius)/pix_dist);
 
     // accumulate gradients in orientation histogram
+    // #pragma omp parallel for collapse(2) num_threads(16) // worse performance due to critical region
     for (int x = x_start; x <= x_end; x++) {
         for (int y = y_start; y <= y_end; y++) {
             gx = img_grad.get_pixel(x, y, 0);
@@ -329,6 +339,7 @@ std::vector<float> find_keypoint_orientations(Keypoint& kp,
                               /(2*patch_sigma*patch_sigma));
             theta = std::fmod(std::atan2(gy, gx)+2*M_PI, 2*M_PI);
             bin = (int)std::round(N_BINS/(2*M_PI)*theta) % N_BINS;
+            // #pragma omp atomic update
             hist[bin] += weight * grad_norm;
         }
     }
@@ -423,6 +434,7 @@ void compute_keypoint_descriptor(Keypoint& kp, float theta,
     float cos_t = std::cos(theta), sin_t = std::sin(theta);
     float patch_sigma = lambda_desc * kp.sigma;
     //accumulate samples into histograms
+    #pragma omp parallel for collapse(2) num_threads(16)
     for (int m = x_start; m <= x_end; m++) {
         for (int n = y_start; n <= y_end; n++) {
             // find normalized coords w.r.t. kp position and reference orientation
@@ -521,10 +533,12 @@ std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
 
     std::vector<std::pair<int, int>> matches;
 
+    #pragma omp parallel for num_threads(16)
     for (int i = 0; i < a.size(); i++) {
         // find two nearest neighbours in b for current keypoint from a
         int nn1_idx = -1;
         float nn1_dist = 100000000, nn2_dist = 100000000;
+        #pragma omp parallel for num_threads(16)
         for (int j = 0; j < b.size(); j++) {
             float dist = euclidean_dist(a[i].descriptor, b[j].descriptor);
             if (dist < nn1_dist) {

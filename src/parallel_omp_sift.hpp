@@ -1,16 +1,16 @@
 
-#ifndef SIFT_H
-#define SIFT_H
+#ifndef PARALLEL_OMP_SIFT_H
+#define PARALLEL_OMP_SIFT_H
 
 #include <vector>
 #include <array>
 #include <cstdint>
 
-#include "image.hpp"
+#include "parallel_omp_image.hpp"
 
-using namespace image;
+using namespace parallel_omp_image;
 
-namespace sift {
+namespace parallel_omp_sift {
 
 struct ScaleSpacePyramid {
     int num_octaves;
@@ -93,5 +93,5 @@ Image draw_keypoints(const Image& img, const std::vector<Keypoint>& kps);
 Image draw_matches(const Image& a, const Image& b, std::vector<Keypoint>& kps_a,
                    std::vector<Keypoint>& kps_b, std::vector<std::pair<int, int>> matches);
 
-} // namespace sift
+} // namespace parallel_omp_sift
 #endif

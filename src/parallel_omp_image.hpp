@@ -1,10 +1,11 @@
-#ifndef IMAGE_H
-#define IMAGE_H
+#ifndef PARALLEL_OMP_IMAGE_H
+#define PARALLEL_OMP_IMAGE_H
 #include <string>
 
 enum Interpolation {BILINEAR, NEAREST};
 
-namespace image {
+namespace parallel_omp_image {
+
 struct Image {
     explicit Image(std::string file_path);
     Image(int w, int h, int c);
@@ -38,5 +39,6 @@ Image gaussian_blur(const Image& img, float sigma);
 void draw_point(Image& img, int x, int y, int size=3);
 void draw_line(Image& img, int x1, int y1, int x2, int y2);
 
-} // namespace image
+} // namespace parallel_omp_image
+
 #endif
