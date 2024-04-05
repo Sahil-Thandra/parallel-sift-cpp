@@ -46,11 +46,13 @@ ScaleSpacePyramid generate_gaussian_pyramid(const Image& img, float sigma_min,
         std::vector<std::vector<Image>>(num_octaves)
     };
     
-    // can't do parallelization here, since the current octave depends on the previous octave (resize)
+    // can't do parallelization here, since the current octave
+    // depends on the previous octave (resize)
     for (int i = 0; i < num_octaves; i++) {
         pyramid.octaves[i].reserve(imgs_per_octave);
         pyramid.octaves[i].push_back(std::move(base_img));
-        // can't do parallelization here, since the current image depends on the previous image (gaussian blur)
+        // can't do parallelization here, since the current image
+        // depends on the previous image (gaussian blur)
         for (int j = 1; j < sigma_vals.size(); j++) {
             const Image& prev_img = pyramid.octaves[i].back();
             pyramid.octaves[i].push_back(gaussian_blur(prev_img, sigma_vals[j]));
@@ -71,13 +73,16 @@ ScaleSpacePyramid generate_dog_pyramid(const ScaleSpacePyramid& img_pyramid)
         img_pyramid.imgs_per_octave - 1,
         std::vector<std::vector<Image>>(img_pyramid.num_octaves)
     };
-    // #pragma omp parallel for num_threads(8) // increasing the processing time, cost of parallelization is high
+    // #pragma omp parallel for num_threads(8) 
+    // increasing the processing time, cost of parallelization is high
     for (int i = 0; i < dog_pyramid.num_octaves; i++) {
         dog_pyramid.octaves[i].reserve(dog_pyramid.imgs_per_octave);
-        // can't do parallelization here, since the current image depends on the previous image
+        // can't do parallelization here, since the current image
+        // depends on the previous image
         for (int j = 1; j < img_pyramid.imgs_per_octave; j++) {
             Image diff = img_pyramid.octaves[i][j];
-            // #pragma omp parallel for num_threads(16) // increasing the processing time, cost of parallelization is high
+            // #pragma omp parallel for num_threads(16) 
+            // increasing the processing time, cost of parallelization is high
             for (int pix_idx = 0; pix_idx < diff.size; pix_idx++) {
                 diff.data[pix_idx] -= img_pyramid.octaves[i][j-1].data[pix_idx];
             }
@@ -232,7 +237,8 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
                                      float edge_thresh)
 {
     std::vector<Keypoint> keypoints;
-    // #pragma omp parallel for num_threads(16) // increasing the processing time, cost of parallelization is high
+    // #pragma omp parallel for num_threads(16) 
+    // increasing the processing time, cost of parallelization is high
     for (int i = 0; i < dog_pyramid.num_octaves; i++) {
         const std::vector<Image>& octave = dog_pyramid.octaves[i];
         // #pragma omp parallel for num_threads(16)
@@ -270,7 +276,8 @@ ScaleSpacePyramid generate_gradient_pyramid(const ScaleSpacePyramid& pyramid)
         pyramid.imgs_per_octave,
         std::vector<std::vector<Image>>(pyramid.num_octaves)
     };
-    // #pragma omp parallel for num_threads(16) // increasing the processing time, cost of parallelization is high
+    // #pragma omp parallel for num_threads(16) 
+    // increasing the processing time, cost of parallelization is high
     for (int i = 0; i < pyramid.num_octaves; i++) {
         grad_pyramid.octaves[i].reserve(grad_pyramid.imgs_per_octave);
         int width = pyramid.octaves[i][0].width;
@@ -279,7 +286,8 @@ ScaleSpacePyramid generate_gradient_pyramid(const ScaleSpacePyramid& pyramid)
         for (int j = 0; j < pyramid.imgs_per_octave; j++) {
             Image grad(width, height, 2);
             float gx, gy;
-            // #pragma omp parallel for collapse(2) num_threads(16) // increasing the processing time, cost of parallelization is high
+            // #pragma omp parallel for collapse(2) num_threads(16) 
+            // increasing the processing time, cost of parallelization is high
             for (int x = 1; x < grad.width-1; x++) {
                 for (int y = 1; y < grad.height-1; y++) {
                     gx = (pyramid.octaves[i][j].get_pixel(x+1, y, 0)
@@ -290,7 +298,10 @@ ScaleSpacePyramid generate_gradient_pyramid(const ScaleSpacePyramid& pyramid)
                     grad.set_pixel(x, y, 1, gy);
                 }
             }
-            grad_pyramid.octaves[i].push_back(grad);
+            // #pragma omp critical
+            {
+                grad_pyramid.octaves[i].push_back(grad);
+            }
         }
     }
     return grad_pyramid;
@@ -338,7 +349,9 @@ std::vector<float> find_keypoint_orientations(Keypoint& kp,
     int y_end = std::round((kp.y + patch_radius)/pix_dist);
 
     // accumulate gradients in orientation histogram
-    // #pragma omp parallel for collapse(2) num_threads(16) // increasing the processing time due to critical region
+    
+    // #pragma omp parallel for collapse(2) num_threads(16) 
+    // increasing the processing time due to critical region
     for (int x = x_start; x <= x_end; x++) {
         for (int y = y_start; y <= y_end; y++) {
             gx = img_grad.get_pixel(x, y, 0);
@@ -556,7 +569,8 @@ std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
         // find two nearest neighbours in b for current keypoint from a
         int nn1_idx = -1;
         float nn1_dist = 100000000, nn2_dist = 100000000;
-        // can't do parallelization here, because we are trying to find minimum distance across iterations
+        // can't do parallelization here, because we are trying to 
+        // find minimum distance across iterations
         for (int j = 0; j < b.size(); j++) {
             float dist = euclidean_dist(a[i].descriptor, b[j].descriptor);
             if (dist < nn1_dist) {
