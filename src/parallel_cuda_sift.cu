@@ -9,13 +9,14 @@
 #include <tuple>
 #include <cassert>
 
-#include "parallel_omp_sift.hpp"
-#include "parallel_omp_image.hpp"
+#include "parallel_cuda_sift.hpp"
+#include "parallel_cuda_image.hpp"
 
-using namespace parallel_omp_image;
+using namespace std;
+using namespace parallel_cuda_image;
 
 
-namespace parallel_omp_sift {
+namespace parallel_cuda_sift {
 
 ScaleSpacePyramid generate_gaussian_pyramid(const Image& img, float sigma_min,
                                             int num_octaves, int scales_per_octave)
@@ -489,6 +490,10 @@ void compute_keypoint_descriptor(Keypoint& kp, float theta,
     hists_to_vec(histograms, kp.descriptor);
 }
 
+__global__ void kernel_call(int N, float *in, float* out)
+{
+}
+
 std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sigma_min,
                                                      int num_octaves, int scales_per_octave, 
                                                      float contrast_thresh, float edge_thresh, 
@@ -541,6 +546,72 @@ std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sig
     end = std::chrono::high_resolution_clock::now();
     elapsed = end - start;
     std::cout << "Time to find key points orientation and compute descriptor: " << elapsed.count() << "s" << std::endl;
+
+
+    // CUDA exp
+    float *host_in, *host_out;
+    float *dev_in, *dev_out;
+
+
+    size_t N = 2<<(9);   //1024 elements
+    cout<< N << " ";
+		
+    //create buffer on host	
+    host_in = (float*) malloc(N* sizeof(float));
+    host_out = (float*) malloc(N * sizeof(float));
+
+    //create buffer on device
+    cudaError_t err = cudaMalloc(&dev_in, N*sizeof(float));
+    if (err != cudaSuccess){
+      cout<<"Dev Memory not allocated"<<endl;
+      exit(-1);
+    }
+
+    err = cudaMalloc(&dev_out, N*sizeof(float));
+    if (err != cudaSuccess){
+       cout<<"Dev Memory not allocated"<<endl;
+       exit(-1);
+    }
+
+     
+    //using OpenMP to perform timing on the host   
+    double st = omp_get_wtime();
+    cudaMemcpy(dev_in, host_in, N * sizeof(float), cudaMemcpyHostToDevice);
+    double et = omp_get_wtime();
+ 
+    cout<<"Copy time: "<<(et-st)*1000<<"ms ";     
+
+
+    //create GPU timing events for timing the GPU
+    cudaEvent_t st2, et2;
+    cudaEventCreate(&st2);
+    cudaEventCreate(&et2);        
+     
+    cudaEventRecord(st2);
+    kernel_call<<<1, 32>>>(N, dev_in, dev_out);
+    cudaEventRecord(et2);
+        
+    //host waits until et2 has occured     
+    cudaEventSynchronize(et2);
+
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, st2, et2);
+
+    cout<<"Kernel time: "<<milliseconds<<"ms"<<endl;
+
+    //copy data out
+    cudaMemcpy(host_out, dev_out, N * sizeof(float), cudaMemcpyDeviceToHost);
+
+    cudaEventDestroy(st2);
+    cudaEventDestroy(et2);
+
+    free(host_in);
+    free(host_out);
+    cudaFree(dev_in);
+    cudaFree(dev_out);
+
+    // CUDA exp end
+
 
     return kps;
 }
@@ -631,4 +702,4 @@ Image draw_matches(const Image& a, const Image& b, std::vector<Keypoint>& kps_a,
     return res;
 }
 
-} // namespace parallel_omp_sift
+} // namespace parallel_cuda_sift
