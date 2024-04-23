@@ -250,16 +250,71 @@ Image grayscale_to_rgb(const Image& img)
     return rgb;
 }
 
+__device__ void dev_set_pixel(Image& img, int x, int y, int c, float val)
+{
+    if (x >= img.width || x < 0 || y >= img.height || y < 0 || c >= img.channels || c < 0) {
+        return;
+    }
+    img.data[c*img.width*img.height + y*img.width + x] = val;
+}
+
+__device__ float dev_get_pixel(const Image& img, int x, int y, int c) {
+    if (x < 0)
+        x = 0;
+    if (x >= img.width)
+        x = img.width - 1;
+    if (y < 0)
+        y = 0;
+    if (y >= img.height)
+        y = img.height - 1;
+    return img.data[c*img.width*img.height + y*img.width + x];
+}
+
+__global__ void convolve_vertical(const Image& img, const Image& kernel, const int size, const int center, Image& out_img) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    if (x >= img.width || y >= img.height) return;
+    
+    float sum = 0.0;
+    for (int k = 0; k < size; k++) {
+        int dy = -center + k;
+        sum += dev_get_pixel(img, x, y + dy, 0) * kernel.data[k];
+    }
+    dev_set_pixel(out_img, x, y, 0, sum);
+}
+
+__global__ void convolve_horizontal(const Image& img, const Image& kernel, const int size, const int center, Image& out_img) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    if (x >= img.width || y >= img.height) return;
+    
+    float sum = 0.0;
+    for (int k = 0; k < size; k++) {
+         int dx = -center + k;
+        sum += dev_get_pixel(img, x+dx, y, 0) * kernel.data[k];
+    }
+    dev_set_pixel(out_img, x, y, 0, sum);
+}
+
 // separable 2D gaussian blur for 1 channel image
 Image gaussian_blur(const Image& img, float sigma)
 {
     assert(img.channels == 1);
+    Image dev_img(img.width, img.height, 1);
+    // need to do deep copy, fix sizeof struct being copied
+    // https://forums.developer.nvidia.com/t/gpu-struct-allocation/42638
+    // https://stackoverflow.com/questions/14284964/cuda-how-to-allocate-memory-for-data-member-of-a-class%5B/url%5D
+    cudaMalloc((void**)&dev_img, sizeof(img));
 
     int size = std::ceil(6 * sigma);
     if (size % 2 == 0)
         size++;
     int center = size / 2;
     Image kernel(size, 1, 1);
+    Image dev_kernel(size, 1, 1);
+    cudaMalloc((void**)&dev_kernel, sizeof(kernel));
     float sum = 0;
     for (int k = -size/2; k <= size/2; k++) {
         float val = std::exp(-(k*k) / (2*sigma*sigma));
@@ -271,21 +326,31 @@ Image gaussian_blur(const Image& img, float sigma)
 
     Image tmp(img.width, img.height, 1);
     Image filtered(img.width, img.height, 1);
+    Image dev_tmp(img.width, img.height, 1);
+    Image dev_filtered(img.width, img.height, 1);
+
+    cudaMalloc((void**)&dev_tmp, sizeof(tmp));
+    cudaMalloc((void**)&dev_filtered, sizeof(filtered));
 
     // convolve vertical
-    #pragma omp parallel for collapse(2) num_threads(16)
-    for (int x = 0; x < img.width; x++) {
-        for (int y = 0; y < img.height; y++) {
-            float sum = 0;
-            for (int k = 0; k < size; k++) {
-                int dy = -center + k;
-                sum += img.get_pixel(x, y+dy, 0) * kernel.data[k];
-            }
-            tmp.set_pixel(x, y, 0, sum);
-        }
-    }
+    cudaMemcpy(&dev_img, &img, sizeof(img), cudaMemcpyHostToDevice);
+    cudaMemcpy(&dev_kernel, &kernel, sizeof(kernel), cudaMemcpyHostToDevice);
+
+    dim3 threadsPerBlock(16, 16); // 16x16 threads per block
+    dim3 numBlocks((img.width + threadsPerBlock.x - 1) / threadsPerBlock.x,
+                   (img.height + threadsPerBlock.y - 1) / threadsPerBlock.y);
+    convolve_vertical<<<numBlocks, threadsPerBlock>>>(dev_img, dev_kernel, size, center, dev_tmp);
+
+    cudaMemcpy(&tmp, &dev_tmp, sizeof(tmp), cudaMemcpyDeviceToHost);
+
+    cudaDeviceSynchronize();
+
+    cudaFree(&dev_img);
+    cudaFree(&dev_kernel);
+    cudaFree(&dev_tmp);
+    cudaFree(&dev_filtered);
+    
     // convolve horizontal
-    #pragma omp parallel for collapse(2) num_threads(16)
     for (int x = 0; x < img.width; x++) {
         for (int y = 0; y < img.height; y++) {
             float sum = 0;
