@@ -298,69 +298,144 @@ __global__ void convolve_horizontal(const Image& img, const Image& kernel, const
     dev_set_pixel(out_img, x, y, 0, sum);
 }
 
+__global__ void setDeviceImageSize(Image* devimg, const int w, const int h, const int c){
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        devimg->width = w;
+        devimg->height = h;
+        devimg->channels = c;
+        devimg->size = w*h*c;
+    }
+}
+
+__global__ void setPixelKernel(Image* img, int x, int y, int c, float val) {
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+        dev_set_pixel(*img, x, y, c, val);;
+}
+
+__global__ void normPixelKernel(Image* img, float sum) {
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        for (int k = 0; k < img->size; k++)
+            img->data[k] /= sum;
+    }
+}
+
+__global__ void imagePrint(Image* devimg)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        for (int k = 0; k < devimg->size; k++) {
+            printf("%f\n", devimg->data[k]);
+        }
+    } 
+}
+__global__ void imageDataRefCopy(Image* devImg, float *srcDevImg)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        devImg->data = srcDevImg;
+    }
+}
+
 // separable 2D gaussian blur for 1 channel image
 Image gaussian_blur(const Image& img, float sigma)
 {
     assert(img.channels == 1);
-    Image dev_img(img.width, img.height, 1);
+
+    Image *dev_img = nullptr;
+    float *dev_img_data = nullptr;
     // need to do deep copy, fix sizeof struct being copied
     // https://forums.developer.nvidia.com/t/gpu-struct-allocation/42638
     // https://stackoverflow.com/questions/14284964/cuda-how-to-allocate-memory-for-data-member-of-a-class%5B/url%5D
-    cudaMalloc((void**)&dev_img, sizeof(img));
+    cudaError_t err = cudaMalloc((void**)&dev_img, sizeof(Image));
+    if (err != cudaSuccess){
+      std::cout<<cudaGetErrorString(err)<<std::endl;
+      exit(-1);
+    }
+    setDeviceImageSize<<<1,1>>>(dev_img, img.width, img.height, img.channels);
+    cudaDeviceSynchronize();
 
+    err = cudaMalloc((void**)&dev_img_data, img.size*sizeof(float));
+    if (err != cudaSuccess){
+      std::cout<<cudaGetErrorString(err)<<std::endl;
+      exit(-1);
+    }
+
+    cudaMemcpy(dev_img_data, img.data, img.size*sizeof(float), cudaMemcpyHostToDevice);
+    imageDataRefCopy<<<1,1>>>(dev_img, dev_img_data);
+    cudaDeviceSynchronize();
+  
     int size = std::ceil(6 * sigma);
     if (size % 2 == 0)
         size++;
     int center = size / 2;
-    Image kernel(size, 1, 1);
-    Image dev_kernel(size, 1, 1);
-    cudaMalloc((void**)&dev_kernel, sizeof(kernel));
+
+    Image *dev_kernel;
+    float *dev_kernel_data;
+
+    cudaMalloc((void**)&dev_kernel, sizeof(Image));
+    cudaMalloc((void**)&dev_kernel_data, size * sizeof(float));
+    imageDataRefCopy<<<1,1>>>(dev_kernel, dev_kernel_data);
+    cudaDeviceSynchronize();
+    setDeviceImageSize<<<1, 1>>>(dev_kernel, size, 1, 1);
+    cudaDeviceSynchronize();
+
     float sum = 0;
     for (int k = -size/2; k <= size/2; k++) {
         float val = std::exp(-(k*k) / (2*sigma*sigma));
-        kernel.set_pixel(center+k, 0, 0, val);
+        setPixelKernel<<<1,1>>>(dev_kernel, center+k, 0, 0, val);
+        cudaDeviceSynchronize();
         sum += val;
     }
-    for (int k = 0; k < size; k++)
-        kernel.data[k] /= sum;
 
-    Image tmp(img.width, img.height, 1);
+    normPixelKernel<<<1,1>>>(dev_kernel, sum);
+    cudaDeviceSynchronize();
+
     Image filtered(img.width, img.height, 1);
-    Image dev_tmp(img.width, img.height, 1);
-    Image dev_filtered(img.width, img.height, 1);
+    Image *dev_temp;
+    float *dev_temp_data;
 
-    cudaMalloc((void**)&dev_tmp, sizeof(tmp));
-    cudaMalloc((void**)&dev_filtered, sizeof(filtered));
+    cudaMalloc((void**)&dev_temp, sizeof(Image));
+    cudaMalloc((void**)&dev_temp_data, (img.width*img.height*1)*sizeof(float));
+    imageDataRefCopy<<<1,1>>>(dev_temp, dev_temp_data);
+    cudaDeviceSynchronize();
+
+    setDeviceImageSize<<<1, 1>>>(dev_temp, img.width, img.height, 1);
+    cudaDeviceSynchronize();
+
+    Image *dev_filtered;
+    float *dev_filtered_data;
+
+    cudaMalloc((void**)&dev_filtered, sizeof(Image));
+    cudaMalloc((void**)&dev_filtered_data, (img.width*img.height*1)*sizeof(float));
+    imageDataRefCopy<<<1,1>>>(dev_filtered, dev_filtered_data);
+    cudaDeviceSynchronize();
+
+    setDeviceImageSize<<<1, 1>>>(dev_filtered, img.width, img.height, 1);
+    cudaDeviceSynchronize();
 
     // convolve vertical
-    cudaMemcpy(&dev_img, &img, sizeof(img), cudaMemcpyHostToDevice);
-    cudaMemcpy(&dev_kernel, &kernel, sizeof(kernel), cudaMemcpyHostToDevice);
-
     dim3 threadsPerBlock(16, 16); // 16x16 threads per block
     dim3 numBlocks((img.width + threadsPerBlock.x - 1) / threadsPerBlock.x,
                    (img.height + threadsPerBlock.y - 1) / threadsPerBlock.y);
-    convolve_vertical<<<numBlocks, threadsPerBlock>>>(dev_img, dev_kernel, size, center, dev_tmp);
-
-    cudaMemcpy(&tmp, &dev_tmp, sizeof(tmp), cudaMemcpyDeviceToHost);
-
+    convolve_vertical<<<numBlocks, threadsPerBlock>>>(*dev_img, *dev_kernel, size, center, *dev_temp);
     cudaDeviceSynchronize();
 
-    cudaFree(&dev_img);
-    cudaFree(&dev_kernel);
-    cudaFree(&dev_tmp);
-    cudaFree(&dev_filtered);
-    
     // convolve horizontal
-    for (int x = 0; x < img.width; x++) {
-        for (int y = 0; y < img.height; y++) {
-            float sum = 0;
-            for (int k = 0; k < size; k++) {
-                int dx = -center + k;
-                sum += tmp.get_pixel(x+dx, y, 0) * kernel.data[k];
-            }
-            filtered.set_pixel(x, y, 0, sum);
-        }
-    }
+    convolve_horizontal<<<numBlocks, threadsPerBlock>>>(*dev_temp, *dev_kernel, size, center, *dev_filtered);
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(filtered.data, dev_filtered_data, filtered.size*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaFree(dev_img_data);
+    cudaFree(dev_img);
+    cudaFree(dev_kernel_data);
+    cudaFree(dev_kernel);
+    cudaFree(dev_temp_data);
+    cudaFree(dev_temp);
+    cudaFree(dev_filtered_data);
+    cudaFree(dev_filtered);
+
     return filtered;
 }
 
