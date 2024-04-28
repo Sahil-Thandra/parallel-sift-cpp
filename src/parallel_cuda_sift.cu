@@ -492,12 +492,19 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
 		    {
                 const Image& img = octave[j];
                 dim3 threadsPerBlock(16, 16);
-                dim3 numBlocks((octave[j].width + threadsPerBlock.x - 1) / threadsPerBlock.x, 
-                        (octave[j].height + threadsPerBlock.y - 1) / threadsPerBlock.y);
+                dim3 numBlocks((img.width + threadsPerBlock.x - 1) / threadsPerBlock.x, 
+                        (img.height + threadsPerBlock.y - 1) / threadsPerBlock.y);
 
                 detectKeypoints<<<numBlocks, threadsPerBlock>>>(dev_octave_img, j, dog_pyramid.imgs_per_octave, contrast_thresh, edge_thresh, dev_keypoints, dev_kp_count, maxKeypoints);
                 cudaDeviceSynchronize();
             }
+        // freeing GPU space    
+        for(int imgOctIndex = 0; imgOctIndex< dog_pyramid.imgs_per_octave; imgOctIndex++)
+        {
+            cudaFree(dev_octave_img_data[imgOctIndex]);
+            cudaFree(dev_octave_img[imgOctIndex]);
+        }
+
     }
     return keypoints;
 }
