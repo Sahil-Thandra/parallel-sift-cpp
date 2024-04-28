@@ -11,6 +11,7 @@
 
 #include "parallel_cuda_sift.hpp"
 #include "parallel_cuda_image.hpp"
+// #include "parallel_cuda_image.cuh"
 
 using namespace std;
 using namespace parallel_cuda_image;
@@ -124,7 +125,18 @@ ScaleSpacePyramid generate_dog_pyramid(const ScaleSpacePyramid& img_pyramid)
 }
  */
 
-extern __device__ float dev_get_pixel(const Image& img, int x, int y, int c);
+// extern __device__ float dev_get_pixel(const Image& img, int x, int y, int c);
+__device__ float dev_get_pixel(const Image& img, int x, int y, int c) {
+    if (x < 0)
+        x = 0;
+    if (x >= img.width)
+        x = img.width - 1;
+    if (y < 0)
+        y = 0;
+    if (y >= img.height)
+        y = img.height - 1;
+    return img.data[c*img.width*img.height + y*img.width + x];
+}
 
 __device__ bool point_is_extremum(const Image* octave[], int scale, int x, int y)
 {
@@ -421,7 +433,22 @@ __device__ bool refine_or_discard_keypoint(Keypoint& kp, const Image* octave[], 
     }
     return keypoints;
 } */
-
+__global__ void imageDataRefCopy(Image* devImg, float *srcDevImg)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        devImg->data = srcDevImg;
+    }
+}
+__global__ void setDeviceImageSize(Image* devimg, const int w, const int h, const int c){
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        devimg->width = w;
+        devimg->height = h;
+        devimg->channels = c;
+        devimg->size = w*h*c;
+    }
+}
 __global__ void detectKeypoints(const Image* octave[], int imgIndex, int imgsPerOctave, float contrastThresh, float edgeThresh, Keypoint* keypoints, int* keypointCount, int maxKeypoints) {
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -434,7 +461,7 @@ __global__ void detectKeypoints(const Image* octave[], int imgIndex, int imgsPer
         }
 
         if (point_is_extremum(octave, imgIndex, x, y)) {
-            Keypoint kp = {x, y, blockIdx.z, -1, -1, -1, -1};
+            Keypoint kp = {x, y, imgIndex, -1, -1, -1, -1};
             if (refine_or_discard_keypoint(kp, octave, imgsPerOctave, contrastThresh, edgeThresh)) {
                 int index = atomicAdd(keypointCount, 1);
                 if (index < maxKeypoints) {
@@ -444,8 +471,6 @@ __global__ void detectKeypoints(const Image* octave[], int imgIndex, int imgsPer
         }
     }
 }
-extern __global__ void imageDataRefCopy(Image* devImg, float *srcDevImg);
-extern __global__ void setDeviceImageSize(Image* devimg, const int w, const int h, const int c);
 
 std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float contrast_thresh,
                                      float edge_thresh)
@@ -464,7 +489,7 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
     {
         const std::vector<Image>& octave = dog_pyramid.octaves[i];
 
-        Image* dev_octave_img[dog_pyramid.imgs_per_octave];
+        Image *dev_octave_img[dog_pyramid.imgs_per_octave];
         float *dev_octave_img_data[dog_pyramid.imgs_per_octave];
         cudaError_t err;
         // copy images in an octave to GPU
@@ -475,16 +500,16 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
             std::cout<<cudaGetErrorString(err)<<std::endl;
             exit(-1);
             }
-            setDeviceImageSize<<<1,1>>>(dev_octave_img[imgOctIndex], octave[i].width, octave[i].height, octave[i].channels);
+            setDeviceImageSize<<<1,1>>>(dev_octave_img[imgOctIndex], octave[imgOctIndex].width, octave[imgOctIndex].height, octave[imgOctIndex].channels);
             cudaDeviceSynchronize();
 
-            err = cudaMalloc((void**)&dev_octave_img_data[imgOctIndex], octave[i].size * sizeof(float));
+            err = cudaMalloc((void**)&dev_octave_img_data[imgOctIndex], octave[imgOctIndex].size*sizeof(float));
             if (err != cudaSuccess){
             std::cout<<cudaGetErrorString(err)<<std::endl;
             exit(-1);
             }
 
-            cudaMemcpy(dev_octave_img_data[imgOctIndex], octave[i].data, octave[i].size*sizeof(float), cudaMemcpyHostToDevice);
+            cudaMemcpy(dev_octave_img_data[imgOctIndex], octave[imgOctIndex].data, octave[imgOctIndex].size*sizeof(float), cudaMemcpyHostToDevice);
             imageDataRefCopy<<<1,1>>>(dev_octave_img[imgOctIndex], dev_octave_img_data[imgOctIndex]);
             cudaDeviceSynchronize();
         }
@@ -495,7 +520,7 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
                 dim3 numBlocks((img.width + threadsPerBlock.x - 1) / threadsPerBlock.x, 
                         (img.height + threadsPerBlock.y - 1) / threadsPerBlock.y);
 
-                detectKeypoints<<<numBlocks, threadsPerBlock>>>(dev_octave_img, j, dog_pyramid.imgs_per_octave, contrast_thresh, edge_thresh, dev_keypoints, dev_kp_count, maxKeypoints);
+                detectKeypoints<<<numBlocks, threadsPerBlock>>>(const_cast<const parallel_cuda_image::Image**>(dev_octave_img), j, dog_pyramid.imgs_per_octave, contrast_thresh, edge_thresh, dev_keypoints, dev_kp_count, maxKeypoints);
                 cudaDeviceSynchronize();
             }
         // freeing GPU space    
@@ -505,6 +530,15 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
             cudaFree(dev_octave_img[imgOctIndex]);
         }
 
+    }
+    int keyPointCount = 0;
+
+    cudaMemcpy(&keyPointCount, dev_kp_count, sizeof(int), cudaMemcpyDeviceToHost);
+    keypoints.resize(keyPointCount);
+
+    cudaError_t cudaStatus = cudaMemcpy(keypoints.data(), dev_keypoints, sizeof(Keypoint) * keyPointCount, cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed!" << std::endl;
     }
     return keypoints;
 }
@@ -729,6 +763,59 @@ void compute_keypoint_descriptor(Keypoint& kp, float theta,
     // build feature vector (descriptor) from histograms
     hists_to_vec(histograms, kp.descriptor);
 }
+// __global__ void compute_keypoint_descriptor_kernel(Keypoint kp, float theta, const ScaleSpacePyramid grad_pyramid, float lambda_desc, float* histograms, ...) {
+//     // Calculate the thread's corresponding m and n
+//     int m = blockIdx.x * blockDim.x + threadIdx.x;
+//     int n = blockIdx.y * blockDim.y + threadIdx.y;
+// }
+// void compute_keypoint_descriptor(Keypoint& kp, float theta,
+//                                  const ScaleSpacePyramid& grad_pyramid,
+//                                  float lambda_desc)
+// {
+//     float pix_dist = MIN_PIX_DIST * std::pow(2, kp.octave);
+//     const Image& img_grad = grad_pyramid.octaves[kp.octave][kp.scale];
+//     float histograms[N_HIST][N_HIST][N_ORI] = {{{0}}};
+
+//     //find start and end coords for loops over image patch
+//     float half_size = std::sqrt(2)*lambda_desc*kp.sigma*(N_HIST+1.)/N_HIST;
+//     int x_start = std::round((kp.x-half_size) / pix_dist);
+//     int x_end = std::round((kp.x+half_size) / pix_dist);
+//     int y_start = std::round((kp.y-half_size) / pix_dist);
+//     int y_end = std::round((kp.y+half_size) / pix_dist);
+
+//     float cos_t = std::cos(theta), sin_t = std::sin(theta);
+//     float patch_sigma = lambda_desc * kp.sigma;
+//     //accumulate samples into histograms
+
+//     dim3 threadsPerBlock(16, 16); // Example block size, should be tuned
+//     dim3 numBlocks(ceil((x_end - x_start + 1) / float(threadsPerBlock.x)), 
+//                    ceil((y_end - y_start + 1) / float(threadsPerBlock.y)));
+//     for (int m = x_start; m <= x_end; m++) {
+//         for (int n = y_start; n <= y_end; n++) {
+//             // find normalized coords w.r.t. kp position and reference orientation
+//             float x = ((m*pix_dist - kp.x)*cos_t
+//                       +(n*pix_dist - kp.y)*sin_t) / kp.sigma;
+//             float y = (-(m*pix_dist - kp.x)*sin_t
+//                        +(n*pix_dist - kp.y)*cos_t) / kp.sigma;
+
+//             // verify (x, y) is inside the description patch
+//             if (std::max(std::abs(x), std::abs(y)) > lambda_desc*(N_HIST+1.)/N_HIST)
+//                 continue;
+
+//             float gx = img_grad.get_pixel(m, n, 0), gy = img_grad.get_pixel(m, n, 1);
+//             float theta_mn = std::fmod(std::atan2(gy, gx)-theta+4*M_PI, 2*M_PI);
+//             float grad_norm = std::sqrt(gx*gx + gy*gy);
+//             float weight = std::exp(-(std::pow(m*pix_dist-kp.x, 2)+std::pow(n*pix_dist-kp.y, 2))
+//                                     /(2*patch_sigma*patch_sigma));
+//             float contribution = weight * grad_norm;
+
+//             update_histograms(histograms, x, y, contribution, theta_mn, lambda_desc);
+//         }
+//     }
+
+    // build feature vector (descriptor) from histograms
+//     hists_to_vec(histograms, kp.descriptor);
+// }
 
 __global__ void kernel_call(int N, float *in, float* out)
 {
