@@ -502,11 +502,7 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
         // copy images in an octave to GPU
         for(int imgOctIndex = 0; imgOctIndex< dog_pyramid.imgs_per_octave; imgOctIndex++)
         {
-            // err= cudaMalloc((void**)&dev_octave_img[imgOctIndex], sizeof(Image));
-            // if (err != cudaSuccess){
-            //     std::cout<<cudaGetErrorString(err)<<std::endl;
-            //     exit(-1);
-            // }
+
             setDeviceImageSize<<<1,1>>>(*dev_octave_img, imgOctIndex, octave[imgOctIndex].width, octave[imgOctIndex].height, octave[imgOctIndex].channels);
             cudaDeviceSynchronize();
 
@@ -831,16 +827,110 @@ std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sig
     return kps;
 }
 
-float euclidean_dist(std::array<uint8_t, 128>& a, std::array<uint8_t, 128>& b)
+// float euclidean_dist(std::array<uint8_t, 128>& a, std::array<uint8_t, 128>& b)
+// {
+//     float dist = 0;
+//     for (int i = 0; i < 128; i++) {
+//         int di = (int)a[i] - b[i];
+//         dist += di * di;
+//     }
+//     return std::sqrt(dist);
+// }
+
+__device__ float euclidean_dist(uint8_t* a, uint8_t* b)
 {
     float dist = 0;
     for (int i = 0; i < 128; i++) {
         int di = (int)a[i] - b[i];
         dist += di * di;
     }
-    return std::sqrt(dist);
+    return sqrt(dist);
 }
 
+__global__ void find_matches(uint8_t* a_descriptors, uint8_t* b_descriptors, int* matches, int a_size, int b_size, int desc_length, float thresh_relative, float thresh_absolute) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < a_size) {
+        int nn1_idx = -1;
+        float nn1_dist = 100000000, nn2_dist = 100000000;
+        for (int j = 0; j < b_size; j++) {
+            float dist = euclidean_dist(&a_descriptors[i * desc_length], &b_descriptors[j * desc_length]);
+            if (dist < nn1_dist) {
+                nn2_dist = nn1_dist;
+                nn1_dist = dist;
+                nn1_idx = j;
+            } else if (nn1_dist <= dist && dist < nn2_dist) {
+                nn2_dist = dist;
+            }
+        }
+        if (nn1_dist < thresh_relative * nn2_dist && nn1_dist < thresh_absolute) {
+            int idx = atomicAdd(matches, 1);
+            // printf("matches[0]=%d\n", *matches);
+            // printf("idx=%d, match %d,%d\n", idx, i, nn1_idx);
+            matches[2 * idx + 1] = i;
+            matches[2 * idx + 2] = nn1_idx;
+        }
+    }
+}
+// std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
+//                                                        std::vector<Keypoint>& b,
+//                                                        float thresh_relative,
+//                                                        float thresh_absolute)
+// {
+//     assert(a.size() >= 2 && b.size() >= 2);
+
+//     std::vector<std::pair<int, int>> matches;
+
+//     #pragma omp parallel for num_threads(16)
+//     for (int i = 0; i < a.size(); i++) {
+//         // find two nearest neighbours in b for current keypoint from a
+//         int nn1_idx = -1;
+//         float nn1_dist = 100000000, nn2_dist = 100000000;
+//         // can't do parallelization here, because we are trying to 
+//         // find minimum distance across iterations
+//         for (int j = 0; j < b.size(); j++) {
+//             float dist = euclidean_dist(a[i].descriptor, b[j].descriptor);
+//             if (dist < nn1_dist) {
+//                 nn2_dist = nn1_dist;
+//                 nn1_dist = dist;
+//                 nn1_idx = j;
+//             } else if (nn1_dist <= dist && dist < nn2_dist) {
+//                 nn2_dist = dist;
+//             }
+//         }
+//         if (nn1_dist < thresh_relative*nn2_dist && nn1_dist < thresh_absolute) {
+//             #pragma omp critical
+//             {
+//                 matches.push_back({i, nn1_idx});
+//             }
+//         }
+//     }
+//     return matches;
+// }
+
+__global__ void imageDesc(uint8_t* d_a_descriptors, int size)
+{
+    
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        printf("Here at CUDA dec print\n");
+        for (int k = 0; k < size; k++) {
+            if((k<10) || k>(size-10))
+            {
+                printf("%d\n", d_a_descriptors[k*128]);
+            }       
+        }
+    } 
+}
+__global__ void matchPrint(int* match)
+{
+    printf("Here at CUDA match print\n");
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        for (int k = 0; k < match[0]; k++) {
+                printf("aID=%d , bID=%d\n", match[k], match[k+1]);  
+        }
+    } 
+}
 std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
                                                        std::vector<Keypoint>& b,
                                                        float thresh_relative,
@@ -850,30 +940,40 @@ std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
 
     std::vector<std::pair<int, int>> matches;
 
-    #pragma omp parallel for num_threads(16)
-    for (int i = 0; i < a.size(); i++) {
-        // find two nearest neighbours in b for current keypoint from a
-        int nn1_idx = -1;
-        float nn1_dist = 100000000, nn2_dist = 100000000;
-        // can't do parallelization here, because we are trying to 
-        // find minimum distance across iterations
-        for (int j = 0; j < b.size(); j++) {
-            float dist = euclidean_dist(a[i].descriptor, b[j].descriptor);
-            if (dist < nn1_dist) {
-                nn2_dist = nn1_dist;
-                nn1_dist = dist;
-                nn1_idx = j;
-            } else if (nn1_dist <= dist && dist < nn2_dist) {
-                nn2_dist = dist;
-            }
-        }
-        if (nn1_dist < thresh_relative*nn2_dist && nn1_dist < thresh_absolute) {
-            #pragma omp critical
-            {
-                matches.push_back({i, nn1_idx});
-            }
-        }
-    }
+    int *d_matches;
+    int maxSizeMatches = (a.size() * 2 + 1);
+    cudaMalloc(&d_matches, maxSizeMatches * sizeof(int));
+    cudaMemset(d_matches, 0, maxSizeMatches * sizeof(int));
+
+    uint8_t *d_a_descriptors;
+    uint8_t *d_b_descriptors;
+    int desc_size = 128;
+
+    cudaMalloc((void**)&d_a_descriptors, a.size() * desc_size * sizeof(uint8_t));
+    cudaMalloc((void**)&d_b_descriptors, b.size() * desc_size * sizeof(uint8_t));
+
+    for(int i=0;i<a.size();i++)
+        cudaMemcpy(&d_a_descriptors[i*desc_size], &a[i].descriptor[0], desc_size * sizeof(uint8_t), cudaMemcpyHostToDevice);
+    
+    for(int i=0;i<b.size();i++)
+        cudaMemcpy(&d_b_descriptors[i*desc_size], &b[i].descriptor[0], desc_size * sizeof(uint8_t), cudaMemcpyHostToDevice);
+
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (a.size() + threadsPerBlock - 1) / threadsPerBlock;
+    find_matches<<<blocksPerGrid, threadsPerBlock>>>(d_a_descriptors, d_b_descriptors, d_matches, a.size(), b.size(), desc_size, thresh_relative, thresh_absolute);
+    cudaDeviceSynchronize();
+
+    int hostMatches[maxSizeMatches];
+    cudaMemcpy(hostMatches, d_matches, maxSizeMatches*sizeof(int), cudaMemcpyDeviceToHost);
+    
+    // hostMatches[0] holds the count 
+    for(int i=1;i<hostMatches[0];i+=2)
+        matches.emplace_back(hostMatches[i], hostMatches[i+1]);
+
+    cudaFree(d_matches);
+    cudaFree(d_a_descriptors);
+    cudaFree(d_b_descriptors);
+
     return matches;
 }
 
