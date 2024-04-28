@@ -94,7 +94,7 @@ ScaleSpacePyramid generate_dog_pyramid(const ScaleSpacePyramid& img_pyramid)
     return dog_pyramid;
 }
 
-bool point_is_extremum(const std::vector<Image>& octave, int scale, int x, int y)
+/* bool point_is_extremum(const std::vector<Image>& octave, int scale, int x, int y)
 {
     const Image& img = octave[scale];
     const Image& prev = octave[scale-1];
@@ -122,11 +122,45 @@ bool point_is_extremum(const std::vector<Image>& octave, int scale, int x, int y
     }
     return true;
 }
+ */
+
+extern __device__ float dev_get_pixel(const Image& img, int x, int y, int c);
+
+__device__ bool point_is_extremum(const Image* octave[], int scale, int x, int y)
+{
+    const Image& img = *octave[scale];
+    const Image& prev = *octave[scale-1];
+    const Image& next = *octave[scale+1];
+
+    bool is_min = true, is_max = true;
+    float val = dev_get_pixel(img, x, y, 0), neighbor;
+
+    for (int dx : {-1,0,1}) {
+        for (int dy : {-1,0,1}) {
+            neighbor = dev_get_pixel(prev, x+dx, y+dy, 0);
+            if (neighbor > val) is_max = false;
+            if (neighbor < val) is_min = false;
+
+            neighbor = dev_get_pixel(next, x+dx, y+dy, 0);
+            if (neighbor > val) is_max = false;
+            if (neighbor < val) is_min = false;
+
+            neighbor = dev_get_pixel(img, x+dx, y+dy, 0);
+            if (neighbor > val) is_max = false;
+            if (neighbor < val) is_min = false;
+
+            if (!is_min && !is_max) return false;
+        }
+    }
+    return true;
+}
+
 
 // fit a quadratic near the discrete extremum,
 // update the keypoint (interpolated) extremum value
 // and return offsets of the interpolated extremum from the discrete extremum
-std::tuple<float, float, float> fit_quadratic(Keypoint& kp,
+
+/* std::tuple<float, float, float> fit_quadratic(Keypoint& kp,
                                               const std::vector<Image>& octave,
                                               int scale)
 {
@@ -173,9 +207,58 @@ std::tuple<float, float, float> fit_quadratic(Keypoint& kp,
                                    + 0.5*(g1*offset_s + g2*offset_x + g3*offset_y);
     kp.extremum_val = interpolated_extrema_val;
     return std::make_tuple(offset_s, offset_x, offset_y);
+} */
+
+__device__ void fit_quadratic(Keypoint& kp, const Image* octave[], int scale, float *offset_s, float *offset_x, float *offset_y)
+{
+    const Image& img = *octave[scale];
+    const Image& prev = *octave[scale-1];
+    const Image& next = *octave[scale+1];
+
+    float g1, g2, g3;
+    float h11, h12, h13, h22, h23, h33;
+    int x = kp.i, y = kp.j;
+
+    // Gradient computation
+    g1 = (dev_get_pixel(next, x, y, 0) - dev_get_pixel(prev, x, y, 0)) * 0.5f;
+    g2 = (dev_get_pixel(img, x + 1, y, 0) - dev_get_pixel(img, x - 1, y, 0)) * 0.5f;
+    g3 = (dev_get_pixel(img, x, y + 1, 0) - dev_get_pixel(img, x, y - 1, 0)) * 0.5f;
+
+    // Hessian matrix computation
+    h11 = dev_get_pixel(next, x, y, 0) + dev_get_pixel(prev, x, y, 0) - 2 * dev_get_pixel(img, x, y, 0);
+    h22 = dev_get_pixel(img, x + 1, y, 0) + dev_get_pixel(img, x - 1, y, 0) - 2 * dev_get_pixel(img, x, y, 0);
+    h33 = dev_get_pixel(img, x, y + 1, 0) + dev_get_pixel(img, x, y - 1, 0) - 2 * dev_get_pixel(img, x, y, 0);
+    h12 = (dev_get_pixel(next, x + 1, y, 0) - dev_get_pixel(next, x - 1, y, 0)
+          - dev_get_pixel(prev, x + 1, y, 0) + dev_get_pixel(prev, x - 1, y, 0)) * 0.25f;
+    h13 = (dev_get_pixel(next, x, y + 1, 0) - dev_get_pixel(next, x, y - 1, 0)
+          - dev_get_pixel(prev, x, y + 1, 0) + dev_get_pixel(prev, x, y - 1, 0)) * 0.25f;
+    h23 = (dev_get_pixel(img, x + 1, y + 1, 0) - dev_get_pixel(img, x + 1, y - 1, 0)
+          - dev_get_pixel(img, x - 1, y + 1, 0) + dev_get_pixel(img, x - 1, y - 1, 0)) * 0.25f;
+    
+    // Inverse Hessian computation
+    float det = h11 * h22 * h33 - h11 * h23 * h23 - h12 * h12 * h33 + 2 * h12 * h13 * h23 - h13 * h13 * h22;
+    float hinv11 = (h22 * h33 - h23 * h23) / det;
+    float hinv12 = (h13 * h23 - h12 * h33) / det;
+    float hinv13 = (h12 * h23 - h13 * h22) / det;
+    float hinv22 = (h11 * h33 - h13 * h13) / det;
+    float hinv23 = (h12 * h13 - h11 * h23) / det;
+    float hinv33 = (h11 * h22 - h12 * h12) / det;
+
+    // Calculate offset from the discrete extremum
+    float offset_s_l = -hinv11 * g1 - hinv12 * g2 - hinv13 * g3;
+    float offset_x_l = -hinv12 * g1 - hinv22 * g2 - hinv23 * g3;
+    float offset_y_l = -hinv13 * g1 - hinv23 * g2 - hinv33 * g3;
+
+    float interpolated_extrema_val = dev_get_pixel(img, x, y, 0)
+                                   + 0.5f * (g1 * offset_s_l + g2 * offset_x_l + g3 * offset_y_l);
+    kp.extremum_val = interpolated_extrema_val;
+
+    *offset_s = offset_s_l;
+    *offset_x = offset_x_l;
+    *offset_y = offset_y_l;
 }
 
-bool point_is_on_edge(const Keypoint& kp, const std::vector<Image>& octave, float edge_thresh=C_EDGE)
+/* bool point_is_on_edge(const Keypoint& kp, const std::vector<Image>& octave, float edge_thresh=C_EDGE)
 {
     const Image& img = octave[kp.scale];
     float h11, h12, h22;
@@ -192,19 +275,49 @@ bool point_is_on_edge(const Keypoint& kp, const std::vector<Image>& octave, floa
         return true;
     else
         return false;
+} */
+
+__device__ bool point_is_on_edge(const Keypoint& kp, const Image* octave[], float edge_thresh = C_EDGE)
+{
+    const Image& img = *octave[kp.scale];
+    float h11, h12, h22;
+    int x = kp.i, y = kp.j;
+
+    // Second derivative computation using device-specific pixel access
+    h11 = dev_get_pixel(img, x+1, y, 0) + dev_get_pixel(img, x-1, y, 0) - 2 * dev_get_pixel(img, x, y, 0);
+    h22 = dev_get_pixel(img, x, y+1, 0) + dev_get_pixel(img, x, y-1, 0) - 2 * dev_get_pixel(img, x, y, 0);
+    h12 = (dev_get_pixel(img, x+1, y+1, 0) - dev_get_pixel(img, x+1, y-1, 0)
+          - dev_get_pixel(img, x-1, y+1, 0) + dev_get_pixel(img, x-1, y-1, 0)) * 0.25;
+
+    // Hessian determinant and trace calculation for edgeness check
+    float det_hessian = h11 * h22 - h12 * h12;
+    float tr_hessian = h11 + h22;
+    float edgeness = tr_hessian * tr_hessian / det_hessian;
+
+    // Edge response check against threshold
+    return edgeness > (pow(edge_thresh + 1, 2) / edge_thresh);
 }
 
-void find_input_img_coords(Keypoint& kp, float offset_s, float offset_x, float offset_y,
+/* void find_input_img_coords(Keypoint& kp, float offset_s, float offset_x, float offset_y,
                                    float sigma_min=SIGMA_MIN,
                                    float min_pix_dist=MIN_PIX_DIST, int n_spo=N_SPO)
 {
     kp.sigma = std::pow(2, kp.octave) * sigma_min * std::pow(2, (offset_s+kp.scale)/n_spo);
     kp.x = min_pix_dist * std::pow(2, kp.octave) * (offset_x+kp.i);
     kp.y = min_pix_dist * std::pow(2, kp.octave) * (offset_y+kp.j);
+} */
+
+__device__ void find_input_img_coords(Keypoint& kp, float offset_s, float offset_x, float offset_y,
+                                      float sigma_min = SIGMA_MIN,
+                                      float min_pix_dist = MIN_PIX_DIST, int n_spo = N_SPO)
+{
+    kp.sigma = powf(2, kp.octave) * sigma_min * powf(2, (offset_s + kp.scale) / n_spo);
+    kp.x = min_pix_dist * powf(2, kp.octave) * (offset_x + kp.i);
+    kp.y = min_pix_dist * powf(2, kp.octave) * (offset_y + kp.j);
 }
 
-bool refine_or_discard_keypoint(Keypoint& kp, const std::vector<Image>& octave,
-                                float contrast_thresh, float edge_thresh)
+/* bool refine_or_discard_keypoint(Keypoint& kp, const std::vector<Image>& octave,
+                                 float contrast_thresh, float edge_thresh)
 {
     int k = 0;
     bool kp_is_valid = false; 
@@ -232,9 +345,49 @@ bool refine_or_discard_keypoint(Keypoint& kp, const std::vector<Image>& octave,
         }
     }
     return kp_is_valid;
+} */
+
+__device__ float device_abs(float x) {
+    return x < 0 ? -x : x;
 }
 
-std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float contrast_thresh,
+__device__ float device_max(float a, float b, float c) {
+    return fmaxf(a, fmaxf(b, c));
+}
+
+__device__ bool refine_or_discard_keypoint(Keypoint& kp, const Image* octave[], int num_octaves,
+                                           float contrast_thresh, float edge_thresh)
+{
+    int k = 0;
+    bool kp_is_valid = false;
+    float offset_s, offset_x, offset_y;
+    while (k++ < MAX_REFINEMENT_ITERS) {
+        fit_quadratic(kp, octave, kp.scale, &offset_s, &offset_x, &offset_y);
+
+        float max_offset = device_max(device_abs(offset_s), device_abs(offset_x), device_abs(offset_y));
+
+        // Update kp values
+        int new_scale = kp.scale + roundf(offset_s);
+        int new_i = kp.i + roundf(offset_x);
+        int new_j = kp.j + roundf(offset_y);
+        
+        if (new_scale >= num_octaves - 1 || new_scale < 1)
+            break;
+
+        kp.scale = new_scale;
+        kp.i = new_i;
+        kp.j = new_j;
+
+        if (device_abs(kp.extremum_val) > contrast_thresh && max_offset < 0.6 && !point_is_on_edge(kp, octave, edge_thresh)) {
+            find_input_img_coords(kp, offset_s, offset_x, offset_y);
+            kp_is_valid = true;
+            break;
+        }
+    }
+    return kp_is_valid;
+}
+
+/* std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float contrast_thresh,
                                      float edge_thresh)
 {
     std::vector<Keypoint> keypoints;
@@ -265,6 +418,86 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
                 }
             }
         }
+    }
+    return keypoints;
+} */
+
+__global__ void detectKeypoints(const Image* octave[], int imgIndex, int imgsPerOctave, float contrastThresh, float edgeThresh, Keypoint* keypoints, int* keypointCount, int maxKeypoints) {
+
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x > 0 && y > 0 && x < octave[imgIndex]->width - 1 && y < octave[imgIndex]->height - 1) {
+        float pixelValue = dev_get_pixel(*octave[imgIndex], x, y, 0);
+        if (fabs(pixelValue) < 0.8 * contrastThresh) {
+            return;
+        }
+
+        if (point_is_extremum(octave, imgIndex, x, y)) {
+            Keypoint kp = {x, y, blockIdx.z, -1, -1, -1, -1};
+            if (refine_or_discard_keypoint(kp, octave, imgsPerOctave, contrastThresh, edgeThresh)) {
+                int index = atomicAdd(keypointCount, 1);
+                if (index < maxKeypoints) {
+                    keypoints[index] = kp;
+                }
+            }
+        }
+    }
+}
+extern __global__ void imageDataRefCopy(Image* devImg, float *srcDevImg);
+extern __global__ void setDeviceImageSize(Image* devimg, const int w, const int h, const int c);
+
+std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float contrast_thresh,
+                                     float edge_thresh)
+{
+    int* dev_kp_count;
+    cudaMalloc(&dev_kp_count, sizeof(int));
+    cudaMemset(dev_kp_count, 0, sizeof(int));
+
+    Keypoint* dev_keypoints;
+    int maxKeypoints = 10000;
+    cudaMalloc(&dev_keypoints, sizeof(Keypoint) * maxKeypoints);
+
+    std::vector<Keypoint> keypoints;
+
+    for (int i = 0; i < dog_pyramid.num_octaves; i++) 
+    {
+        const std::vector<Image>& octave = dog_pyramid.octaves[i];
+
+        Image* dev_octave_img[dog_pyramid.imgs_per_octave];
+        float *dev_octave_img_data[dog_pyramid.imgs_per_octave];
+        cudaError_t err;
+        // copy images in an octave to GPU
+        for(int imgOctIndex = 0; imgOctIndex< dog_pyramid.imgs_per_octave; imgOctIndex++)
+        {
+            err= cudaMalloc((void**)&dev_octave_img[imgOctIndex], sizeof(Image));
+            if (err != cudaSuccess){
+            std::cout<<cudaGetErrorString(err)<<std::endl;
+            exit(-1);
+            }
+            setDeviceImageSize<<<1,1>>>(dev_octave_img[imgOctIndex], octave[i].width, octave[i].height, octave[i].channels);
+            cudaDeviceSynchronize();
+
+            err = cudaMalloc((void**)&dev_octave_img_data[imgOctIndex], octave[i].size * sizeof(float));
+            if (err != cudaSuccess){
+            std::cout<<cudaGetErrorString(err)<<std::endl;
+            exit(-1);
+            }
+
+            cudaMemcpy(dev_octave_img_data[imgOctIndex], octave[i].data, octave[i].size*sizeof(float), cudaMemcpyHostToDevice);
+            imageDataRefCopy<<<1,1>>>(dev_octave_img[imgOctIndex], dev_octave_img_data[imgOctIndex]);
+            cudaDeviceSynchronize();
+        }
+        for (int j = 1; j < dog_pyramid.imgs_per_octave-1; j++) 
+		    {
+                const Image& img = octave[j];
+                dim3 threadsPerBlock(16, 16);
+                dim3 numBlocks((octave[j].width + threadsPerBlock.x - 1) / threadsPerBlock.x, 
+                        (octave[j].height + threadsPerBlock.y - 1) / threadsPerBlock.y);
+
+                detectKeypoints<<<numBlocks, threadsPerBlock>>>(dev_octave_img, j, dog_pyramid.imgs_per_octave, contrast_thresh, edge_thresh, dev_keypoints, dev_kp_count, maxKeypoints);
+                cudaDeviceSynchronize();
+            }
     }
     return keypoints;
 }
