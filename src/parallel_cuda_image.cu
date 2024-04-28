@@ -330,6 +330,7 @@ __global__ void imagePrint(Image* devimg)
         }
     } 
 }
+
 __global__ void imageDataRefCopy(Image* devImg, float *srcDevImg)
 {
     if (threadIdx.x == 0 && blockIdx.x == 0)
@@ -345,9 +346,6 @@ Image gaussian_blur(const Image& img, float sigma)
 
     Image *dev_img = nullptr;
     float *dev_img_data = nullptr;
-    // need to do deep copy, fix sizeof struct being copied
-    // https://forums.developer.nvidia.com/t/gpu-struct-allocation/42638
-    // https://stackoverflow.com/questions/14284964/cuda-how-to-allocate-memory-for-data-member-of-a-class%5B/url%5D
     cudaError_t err = cudaMalloc((void**)&dev_img, sizeof(Image));
     if (err != cudaSuccess){
       std::cout<<cudaGetErrorString(err)<<std::endl;

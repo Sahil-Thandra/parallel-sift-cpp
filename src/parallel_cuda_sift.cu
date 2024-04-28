@@ -124,13 +124,23 @@ ScaleSpacePyramid generate_dog_pyramid(const ScaleSpacePyramid& img_pyramid)
 }
  */
 
-extern __device__ float dev_get_pixel(const Image& img, int x, int y, int c);
+__device__ float dev_get_pixel(const Image& img, int x, int y, int c) {
+    if (x < 0)
+        x = 0;
+    if (x >= img.width)
+        x = img.width - 1;
+    if (y < 0)
+        y = 0;
+    if (y >= img.height)
+        y = img.height - 1;
+    return img.data[c*img.width*img.height + y*img.width + x];
+}
 
-__device__ bool point_is_extremum(const Image* octave[], int scale, int x, int y)
+__device__ bool point_is_extremum(const Image* octave, int scale, int x, int y)
 {
-    const Image& img = *octave[scale];
-    const Image& prev = *octave[scale-1];
-    const Image& next = *octave[scale+1];
+    const Image& img = octave[scale];
+    const Image& prev = octave[scale-1];
+    const Image& next = octave[scale+1];
 
     bool is_min = true, is_max = true;
     float val = dev_get_pixel(img, x, y, 0), neighbor;
@@ -209,11 +219,12 @@ __device__ bool point_is_extremum(const Image* octave[], int scale, int x, int y
     return std::make_tuple(offset_s, offset_x, offset_y);
 } */
 
-__device__ void fit_quadratic(Keypoint& kp, const Image* octave[], int scale, float *offset_s, float *offset_x, float *offset_y)
+__device__ Offsets fit_quadratic(Keypoint& kp, const Image* octave, int scale)
 {
-    const Image& img = *octave[scale];
-    const Image& prev = *octave[scale-1];
-    const Image& next = *octave[scale+1];
+    Offsets kp_offsets;
+    const Image& img = octave[scale];
+    const Image& prev = octave[scale-1];
+    const Image& next = octave[scale+1];
 
     float g1, g2, g3;
     float h11, h12, h13, h22, h23, h33;
@@ -245,17 +256,15 @@ __device__ void fit_quadratic(Keypoint& kp, const Image* octave[], int scale, fl
     float hinv33 = (h11 * h22 - h12 * h12) / det;
 
     // Calculate offset from the discrete extremum
-    float offset_s_l = -hinv11 * g1 - hinv12 * g2 - hinv13 * g3;
-    float offset_x_l = -hinv12 * g1 - hinv22 * g2 - hinv23 * g3;
-    float offset_y_l = -hinv13 * g1 - hinv23 * g2 - hinv33 * g3;
+    kp_offsets.s = -hinv11 * g1 - hinv12 * g2 - hinv13 * g3;
+    kp_offsets.x = -hinv12 * g1 - hinv22 * g2 - hinv23 * g3;
+    kp_offsets.y = -hinv13 * g1 - hinv23 * g2 - hinv33 * g3;
 
     float interpolated_extrema_val = dev_get_pixel(img, x, y, 0)
-                                   + 0.5f * (g1 * offset_s_l + g2 * offset_x_l + g3 * offset_y_l);
+                                   + 0.5f * (g1 * kp_offsets.s + g2 * kp_offsets.x+ g3 * kp_offsets.y);
     kp.extremum_val = interpolated_extrema_val;
 
-    *offset_s = offset_s_l;
-    *offset_x = offset_x_l;
-    *offset_y = offset_y_l;
+    return kp_offsets;
 }
 
 /* bool point_is_on_edge(const Keypoint& kp, const std::vector<Image>& octave, float edge_thresh=C_EDGE)
@@ -277,9 +286,9 @@ __device__ void fit_quadratic(Keypoint& kp, const Image* octave[], int scale, fl
         return false;
 } */
 
-__device__ bool point_is_on_edge(const Keypoint& kp, const Image* octave[], float edge_thresh = C_EDGE)
+__device__ bool point_is_on_edge(const Keypoint& kp, const Image* octave, float edge_thresh = C_EDGE)
 {
-    const Image& img = *octave[kp.scale];
+    const Image& img = octave[kp.scale];
     float h11, h12, h22;
     int x = kp.i, y = kp.j;
 
@@ -355,21 +364,21 @@ __device__ float device_max(float a, float b, float c) {
     return fmaxf(a, fmaxf(b, c));
 }
 
-__device__ bool refine_or_discard_keypoint(Keypoint& kp, const Image* octave[], int num_octaves,
+__device__ bool refine_or_discard_keypoint(Keypoint& kp, const Image* octave, int num_octaves,
                                            float contrast_thresh, float edge_thresh)
 {
     int k = 0;
     bool kp_is_valid = false;
-    float offset_s, offset_x, offset_y;
+    Offsets kp_offsets;
     while (k++ < MAX_REFINEMENT_ITERS) {
-        fit_quadratic(kp, octave, kp.scale, &offset_s, &offset_x, &offset_y);
+        kp_offsets = fit_quadratic(kp, octave, kp.scale);
 
-        float max_offset = device_max(device_abs(offset_s), device_abs(offset_x), device_abs(offset_y));
+        float max_offset = device_max(device_abs(kp_offsets.s), device_abs(kp_offsets.x), device_abs(kp_offsets.y));
 
         // Update kp values
-        int new_scale = kp.scale + roundf(offset_s);
-        int new_i = kp.i + roundf(offset_x);
-        int new_j = kp.j + roundf(offset_y);
+        int new_scale = kp.scale + roundf(kp_offsets.s);
+        int new_i = kp.i + roundf(kp_offsets.x);
+        int new_j = kp.j + roundf(kp_offsets.y);
         
         if (new_scale >= num_octaves - 1 || new_scale < 1)
             break;
@@ -379,7 +388,7 @@ __device__ bool refine_or_discard_keypoint(Keypoint& kp, const Image* octave[], 
         kp.j = new_j;
 
         if (device_abs(kp.extremum_val) > contrast_thresh && max_offset < 0.6 && !point_is_on_edge(kp, octave, edge_thresh)) {
-            find_input_img_coords(kp, offset_s, offset_x, offset_y);
+            find_input_img_coords(kp, kp_offsets.s, kp_offsets.x, kp_offsets.y);
             kp_is_valid = true;
             break;
         }
@@ -422,19 +431,19 @@ __device__ bool refine_or_discard_keypoint(Keypoint& kp, const Image* octave[], 
     return keypoints;
 } */
 
-__global__ void detectKeypoints(const Image* octave[], int imgIndex, int imgsPerOctave, float contrastThresh, float edgeThresh, Keypoint* keypoints, int* keypointCount, int maxKeypoints) {
+__global__ void detectKeypoints(Image* octave, int octaveIndex, int imgIndex, int imgsPerOctave, float contrastThresh, float edgeThresh, Keypoint* keypoints, int* keypointCount, int maxKeypoints) {
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x > 0 && y > 0 && x < octave[imgIndex]->width - 1 && y < octave[imgIndex]->height - 1) {
-        float pixelValue = dev_get_pixel(*octave[imgIndex], x, y, 0);
+    if (x > 0 && y > 0 && x < octave[imgIndex].width - 1 && y < octave[imgIndex].height - 1) {
+        float pixelValue = dev_get_pixel(octave[imgIndex], x, y, 0);
         if (fabs(pixelValue) < 0.8 * contrastThresh) {
             return;
         }
 
         if (point_is_extremum(octave, imgIndex, x, y)) {
-            Keypoint kp = {x, y, blockIdx.z, -1, -1, -1, -1};
+            Keypoint kp = {x, y, octaveIndex, imgIndex, -1, -1, -1, -1};
             if (refine_or_discard_keypoint(kp, octave, imgsPerOctave, contrastThresh, edgeThresh)) {
                 int index = atomicAdd(keypointCount, 1);
                 if (index < maxKeypoints) {
@@ -444,8 +453,24 @@ __global__ void detectKeypoints(const Image* octave[], int imgIndex, int imgsPer
         }
     }
 }
-extern __global__ void imageDataRefCopy(Image* devImg, float *srcDevImg);
-extern __global__ void setDeviceImageSize(Image* devimg, const int w, const int h, const int c);
+
+__global__ void imageDataRefCopy(Image* dev_octave, const int img_index, float *dev_img)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        dev_octave[img_index].data = dev_img;
+    }
+}
+
+__global__ void setDeviceImageSize(Image* dev_octave, const int img_index, const int w, const int h, const int c){
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        dev_octave[img_index].width = w;
+        dev_octave[img_index].height = h;
+        dev_octave[img_index].channels = c;
+        dev_octave[img_index].size = w*h*c;
+    }
+}
 
 std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float contrast_thresh,
                                      float edge_thresh)
@@ -467,45 +492,64 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
         Image* dev_octave_img[dog_pyramid.imgs_per_octave];
         float *dev_octave_img_data[dog_pyramid.imgs_per_octave];
         cudaError_t err;
+
+        err = cudaMalloc((void**)&dev_octave_img, dog_pyramid.imgs_per_octave * sizeof(Image));
+        if (err != cudaSuccess){
+            std::cout<<cudaGetErrorString(err)<<std::endl;
+            exit(-1);
+        }
+
         // copy images in an octave to GPU
         for(int imgOctIndex = 0; imgOctIndex< dog_pyramid.imgs_per_octave; imgOctIndex++)
         {
-            err= cudaMalloc((void**)&dev_octave_img[imgOctIndex], sizeof(Image));
-            if (err != cudaSuccess){
-            std::cout<<cudaGetErrorString(err)<<std::endl;
-            exit(-1);
-            }
-            setDeviceImageSize<<<1,1>>>(dev_octave_img[imgOctIndex], octave[i].width, octave[i].height, octave[i].channels);
+            // err= cudaMalloc((void**)&dev_octave_img[imgOctIndex], sizeof(Image));
+            // if (err != cudaSuccess){
+            //     std::cout<<cudaGetErrorString(err)<<std::endl;
+            //     exit(-1);
+            // }
+            setDeviceImageSize<<<1,1>>>(*dev_octave_img, imgOctIndex, octave[imgOctIndex].width, octave[imgOctIndex].height, octave[imgOctIndex].channels);
             cudaDeviceSynchronize();
 
-            err = cudaMalloc((void**)&dev_octave_img_data[imgOctIndex], octave[i].size * sizeof(float));
+            err = cudaMalloc((void**)&dev_octave_img_data[imgOctIndex], octave[imgOctIndex].size * sizeof(float));
             if (err != cudaSuccess){
-            std::cout<<cudaGetErrorString(err)<<std::endl;
-            exit(-1);
+                std::cout<<cudaGetErrorString(err)<<std::endl;
+                exit(-1);
             }
 
-            cudaMemcpy(dev_octave_img_data[imgOctIndex], octave[i].data, octave[i].size*sizeof(float), cudaMemcpyHostToDevice);
-            imageDataRefCopy<<<1,1>>>(dev_octave_img[imgOctIndex], dev_octave_img_data[imgOctIndex]);
+            cudaMemcpy(dev_octave_img_data[imgOctIndex], octave[imgOctIndex].data, octave[imgOctIndex].size*sizeof(float), cudaMemcpyHostToDevice);
+            imageDataRefCopy<<<1,1>>>(*dev_octave_img, imgOctIndex, dev_octave_img_data[imgOctIndex]);
             cudaDeviceSynchronize();
         }
-        for (int j = 1; j < dog_pyramid.imgs_per_octave-1; j++) 
-		    {
-                const Image& img = octave[j];
-                dim3 threadsPerBlock(16, 16);
-                dim3 numBlocks((img.width + threadsPerBlock.x - 1) / threadsPerBlock.x, 
-                        (img.height + threadsPerBlock.y - 1) / threadsPerBlock.y);
+        for (int j = 1; j < dog_pyramid.imgs_per_octave-1; j++) {
+            const Image& img = octave[j];
+            dim3 threadsPerBlock(16, 16);
+            dim3 numBlocks((img.width + threadsPerBlock.x - 1) / threadsPerBlock.x, 
+                    (img.height + threadsPerBlock.y - 1) / threadsPerBlock.y);
 
-                detectKeypoints<<<numBlocks, threadsPerBlock>>>(dev_octave_img, j, dog_pyramid.imgs_per_octave, contrast_thresh, edge_thresh, dev_keypoints, dev_kp_count, maxKeypoints);
-                cudaDeviceSynchronize();
-            }
+            detectKeypoints<<<numBlocks, threadsPerBlock>>>(*dev_octave_img, i, j, dog_pyramid.imgs_per_octave, contrast_thresh, edge_thresh, dev_keypoints, dev_kp_count, maxKeypoints);
+            cudaDeviceSynchronize();
+        }
         // freeing GPU space    
-        for(int imgOctIndex = 0; imgOctIndex< dog_pyramid.imgs_per_octave; imgOctIndex++)
-        {
+        for(int imgOctIndex = 0; imgOctIndex< dog_pyramid.imgs_per_octave; imgOctIndex++) {
             cudaFree(dev_octave_img_data[imgOctIndex]);
-            cudaFree(dev_octave_img[imgOctIndex]);
         }
+        cudaFree(dev_octave_img);
 
     }
+    
+    int keyPointCount = 0;
+
+    cudaMemcpy(&keyPointCount, dev_kp_count, sizeof(int), cudaMemcpyDeviceToHost);
+    keypoints.resize(keyPointCount);
+
+    cudaError_t cudaStatus = cudaMemcpy(keypoints.data(), dev_keypoints, sizeof(Keypoint) * keyPointCount, cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed!" << std::endl;
+    }
+
+    cudaFree(dev_keypoints);
+    cudaFree(dev_kp_count);
+
     return keypoints;
 }
 
@@ -730,9 +774,6 @@ void compute_keypoint_descriptor(Keypoint& kp, float theta,
     hists_to_vec(histograms, kp.descriptor);
 }
 
-__global__ void kernel_call(int N, float *in, float* out)
-{
-}
 
 std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sigma_min,
                                                      int num_octaves, int scales_per_octave, 
@@ -786,72 +827,6 @@ std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sig
     end = std::chrono::high_resolution_clock::now();
     elapsed = end - start;
     std::cout << "Time to find key points orientation and compute descriptor: " << elapsed.count() << "s" << std::endl;
-
-
-    // CUDA exp
-    float *host_in, *host_out;
-    float *dev_in, *dev_out;
-
-
-    size_t N = 2<<(9);   //1024 elements
-    cout<< N << " ";
-		
-    //create buffer on host	
-    host_in = (float*) malloc(N* sizeof(float));
-    host_out = (float*) malloc(N * sizeof(float));
-
-    //create buffer on device
-    cudaError_t err = cudaMalloc(&dev_in, N*sizeof(float));
-    if (err != cudaSuccess){
-      cout<<"Dev Memory not allocated"<<endl;
-      exit(-1);
-    }
-
-    err = cudaMalloc(&dev_out, N*sizeof(float));
-    if (err != cudaSuccess){
-       cout<<"Dev Memory not allocated"<<endl;
-       exit(-1);
-    }
-
-     
-    //using OpenMP to perform timing on the host   
-    double st = omp_get_wtime();
-    cudaMemcpy(dev_in, host_in, N * sizeof(float), cudaMemcpyHostToDevice);
-    double et = omp_get_wtime();
- 
-    cout<<"Copy time: "<<(et-st)*1000<<"ms ";     
-
-
-    //create GPU timing events for timing the GPU
-    cudaEvent_t st2, et2;
-    cudaEventCreate(&st2);
-    cudaEventCreate(&et2);        
-     
-    cudaEventRecord(st2);
-    kernel_call<<<1, 32>>>(N, dev_in, dev_out);
-    cudaEventRecord(et2);
-        
-    //host waits until et2 has occured     
-    cudaEventSynchronize(et2);
-
-    float milliseconds = 0;
-    cudaEventElapsedTime(&milliseconds, st2, et2);
-
-    cout<<"Kernel time: "<<milliseconds<<"ms"<<endl;
-
-    //copy data out
-    cudaMemcpy(host_out, dev_out, N * sizeof(float), cudaMemcpyDeviceToHost);
-
-    cudaEventDestroy(st2);
-    cudaEventDestroy(et2);
-
-    free(host_in);
-    free(host_out);
-    cudaFree(dev_in);
-    cudaFree(dev_out);
-
-    // CUDA exp end
-
 
     return kps;
 }

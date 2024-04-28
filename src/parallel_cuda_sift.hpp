@@ -34,6 +34,10 @@ struct Keypoint {
     std::array<uint8_t, 128> descriptor;
 };
 
+struct Offsets {
+   float s, x, y;
+};
+
 //*******************************************
 // SIFT algorithm parameters, used by default
 //*******************************************
