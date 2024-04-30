@@ -593,7 +593,6 @@ ScaleSpacePyramid generate_gradient_pyramid(const ScaleSpacePyramid& pyramid)
 // convolve 6x with box filter
 __device__ void smooth_histogram(float hist[N_BINS])
 {
-    printf("smooth_histogram\n");
     float tmp_hist[N_BINS];
     // can't do parallelization here, small number of iterations
     for (int i = 0; i < 6; i++) {
@@ -613,8 +612,6 @@ __device__ int find_keypoint_orientations(Keypoint& kp,
                                           float lambda_ori, float lambda_desc,
                                           float* orientations, int max_orientations)
 {
-    printf("find_keypoint_orientations\n");
-    printf("%d\n", img_grad.width);
     float pix_dist = MIN_PIX_DIST * powf(2, kp.octave);
     // discard kp if too close to image borders 
     float min_dist_from_border = min(min(min(kp.x, kp.y), pix_dist * img_grad.width - kp.x), pix_dist * img_grad.height - kp.y);
@@ -637,10 +634,8 @@ __device__ int find_keypoint_orientations(Keypoint& kp,
     // can't do parallelization here, small number of iterations
     for (int x = x_start; x <= x_end; x++) {
         for (int y = y_start; y <= y_end; y++) {
-            printf("before get pixel\n");
             gx = dev_get_pixel(img_grad, x, y, 0);
             gy = dev_get_pixel(img_grad, x, y, 1);
-            printf("after get pixel\n");
             grad_norm = sqrtf(gx*gx + gy*gy);
             weight = expf(-((x*pix_dist - kp.x) * (x*pix_dist - kp.x) + (y*pix_dist - kp.y) * (y*pix_dist - kp.y))
                           / (2.0f * patch_sigma * patch_sigma));
@@ -649,8 +644,6 @@ __device__ int find_keypoint_orientations(Keypoint& kp,
             hist[bin] += weight * grad_norm;
         }
     }
-
-    printf("before smooth hist\n");
 
     smooth_histogram(hist);
 
@@ -674,7 +667,6 @@ __device__ int find_keypoint_orientations(Keypoint& kp,
             }
         }
     }
-    printf("find_keypoint_orientations func done\n");
     return num_orientations;
 }
 
@@ -736,7 +728,6 @@ __device__ void compute_keypoint_descriptor(Keypoint& kp, float theta,
                                  const Image& img_grad,
                                  float lambda_desc)
 {
-    printf("compute_keypoint_descriptor \n");
     float pix_dist = MIN_PIX_DIST * powf(2, kp.octave);
     float histograms[N_HIST][N_HIST][N_ORI] = {{{0}}};
 
@@ -787,20 +778,19 @@ __global__ void image_data_ref_copy(Image* img, float* data) {
     img->data = data;
 }
 
-__global__ void process_keypoints(Keypoint *tmp_kps, int num_kps, Image** grad_pyramid,
+__global__ void process_keypoints(Keypoint *tmp_kps, int num_kps, Image** grad_pyramid, int imgs_per_octave,
                                   float lambda_ori, float lambda_desc, Keypoint *output_kps, int *output_index) {
 
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_kps) return;
 
-    const Image& img_grad = *grad_pyramid[tmp_kps[i].octave * N_OCT + tmp_kps[i].scale];
+    const Image& img_grad = *grad_pyramid[tmp_kps[i].octave * imgs_per_octave + tmp_kps[i].scale];
 
     const int max_orientations = 10;
     float orientations[max_orientations];
     int num_orientations = find_keypoint_orientations(tmp_kps[i], img_grad,
                                                       lambda_ori, lambda_desc,
                                                       orientations, max_orientations);
-    printf("find_keypoint_orientations done \n");
     for (int j = 0; j < num_orientations; j++) {
         Keypoint kp = tmp_kps[i];
         compute_keypoint_descriptor(kp, orientations[j], img_grad, lambda_desc);
@@ -812,7 +802,6 @@ __global__ void process_keypoints(Keypoint *tmp_kps, int num_kps, Image** grad_p
 
 void find_and_compute_kp_descriptors(vector<Keypoint>& tmp_kps, vector<Keypoint>& kps, ScaleSpacePyramid& grad_pyramid, float lambda_ori, float lambda_desc) {
     int num_kps = tmp_kps.size();
-    printf("find_and_compute_kp_descriptors \n");
     Keypoint *device_tmp_kps;
     cudaMalloc(&device_tmp_kps, sizeof(Keypoint) * num_kps);
     cudaMemcpy(device_tmp_kps, tmp_kps.data(), sizeof(Keypoint) * num_kps, cudaMemcpyHostToDevice);
@@ -844,8 +833,6 @@ void find_and_compute_kp_descriptors(vector<Keypoint>& tmp_kps, vector<Keypoint>
             cudaMemcpy(&dev_img_data[i * imgs_per_octave + j], &img_data, sizeof(float*), cudaMemcpyHostToDevice);
         }
     }
-
-    printf("copy done\n");
     
     int max_key_points = 10000;
     Keypoint *dev_output_kps;
@@ -856,7 +843,7 @@ void find_and_compute_kp_descriptors(vector<Keypoint>& tmp_kps, vector<Keypoint>
 
     const int threads_per_block = 256;
     const int num_blocks = (num_kps + threads_per_block - 1) / threads_per_block;
-    process_keypoints<<<num_blocks, threads_per_block>>>(device_tmp_kps, num_kps, dev_grad_pyramid,
+    process_keypoints<<<num_blocks, threads_per_block>>>(device_tmp_kps, num_kps, dev_grad_pyramid, imgs_per_octave,
                                                          lambda_ori, lambda_desc, dev_output_kps, dev_key_point_count);
     cudaDeviceSynchronize();
 
