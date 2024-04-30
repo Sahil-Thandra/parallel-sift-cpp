@@ -74,8 +74,6 @@ ScaleSpacePyramid generate_dog_pyramid(const ScaleSpacePyramid& img_pyramid)
         img_pyramid.imgs_per_octave - 1,
         std::vector<std::vector<Image>>(img_pyramid.num_octaves)
     };
-    // #pragma omp parallel for num_threads(8) 
-    // increasing the processing time, cost of parallelization is high
     for (int i = 0; i < dog_pyramid.num_octaves; i++) {
         dog_pyramid.octaves[i].reserve(dog_pyramid.imgs_per_octave);
         // can't do parallelization here, since the current image
@@ -133,7 +131,7 @@ __device__ float dev_get_pixel(const Image& img, int x, int y, int c) {
         y = 0;
     if (y >= img.height)
         y = img.height - 1;
-    return img.data[c*img.width*img.height + y*img.width + x];
+        return img.data[c*img.width*img.height + y*img.width + x];
 }
 
 __device__ bool point_is_extremum(const Image* octave, int scale, int x, int y)
@@ -431,22 +429,22 @@ __device__ bool refine_or_discard_keypoint(Keypoint& kp, const Image* octave, in
     return keypoints;
 } */
 
-__global__ void detectKeypoints(Image* octave, int octaveIndex, int imgIndex, int imgsPerOctave, float contrastThresh, float edgeThresh, Keypoint* keypoints, int* keypointCount, int maxKeypoints) {
+__global__ void detect_keypoints(Image* octave, int octave_index, int img_index, int imgs_per_octave, float contrast_thresh, float edge_thresh, Keypoint* keypoints, int* keypoint_count, int max_keypoints) {
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x > 0 && y > 0 && x < octave[imgIndex].width - 1 && y < octave[imgIndex].height - 1) {
-        float pixelValue = dev_get_pixel(octave[imgIndex], x, y, 0);
-        if (fabs(pixelValue) < 0.8 * contrastThresh) {
+    if (x > 0 && y > 0 && x < octave[img_index].width - 1 && y < octave[img_index].height - 1) {
+        float pixelValue = dev_get_pixel(octave[img_index], x, y, 0);
+        if (fabs(pixelValue) < 0.8 * contrast_thresh) {
             return;
         }
 
-        if (point_is_extremum(octave, imgIndex, x, y)) {
-            Keypoint kp = {x, y, octaveIndex, imgIndex, -1, -1, -1, -1};
-            if (refine_or_discard_keypoint(kp, octave, imgsPerOctave, contrastThresh, edgeThresh)) {
-                int index = atomicAdd(keypointCount, 1);
-                if (index < maxKeypoints) {
+        if (point_is_extremum(octave, img_index, x, y)) {
+            Keypoint kp = {x, y, octave_index, img_index, -1, -1, -1, -1};
+            if (refine_or_discard_keypoint(kp, octave, imgs_per_octave, contrast_thresh, edge_thresh)) {
+                int index = atomicAdd(keypoint_count, 1);
+                if (index < max_keypoints) {
                     keypoints[index] = kp;
                 }
             }
@@ -454,7 +452,7 @@ __global__ void detectKeypoints(Image* octave, int octaveIndex, int imgIndex, in
     }
 }
 
-__global__ void imageDataRefCopy(Image* dev_octave, const int img_index, float *dev_img)
+__global__ void image_data_ref_copy(Image* dev_octave, const int img_index, float *dev_img)
 {
     if (threadIdx.x == 0 && blockIdx.x == 0)
     {
@@ -462,7 +460,7 @@ __global__ void imageDataRefCopy(Image* dev_octave, const int img_index, float *
     }
 }
 
-__global__ void setDeviceImageSize(Image* dev_octave, const int img_index, const int w, const int h, const int c){
+__global__ void set_device_image_size(Image* dev_octave, const int img_index, const int w, const int h, const int c){
     if (threadIdx.x == 0 && blockIdx.x == 0)
     {
         dev_octave[img_index].width = w;
@@ -480,8 +478,8 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
     cudaMemset(dev_kp_count, 0, sizeof(int));
 
     Keypoint* dev_keypoints;
-    int maxKeypoints = 10000;
-    cudaMalloc(&dev_keypoints, sizeof(Keypoint) * maxKeypoints);
+    int max_key_points = 10000;
+    cudaMalloc(&dev_keypoints, sizeof(Keypoint) * max_key_points);
 
     std::vector<Keypoint> keypoints;
 
@@ -500,45 +498,49 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
         }
 
         // copy images in an octave to GPU
-        for(int imgOctIndex = 0; imgOctIndex< dog_pyramid.imgs_per_octave; imgOctIndex++)
+        for(int img_oct_index = 0; img_oct_index < dog_pyramid.imgs_per_octave; img_oct_index++)
         {
-
-            setDeviceImageSize<<<1,1>>>(*dev_octave_img, imgOctIndex, octave[imgOctIndex].width, octave[imgOctIndex].height, octave[imgOctIndex].channels);
+            set_device_image_size<<<1,1>>>(*dev_octave_img, img_oct_index, octave[img_oct_index].width, octave[img_oct_index].height, octave[img_oct_index].channels);
             cudaDeviceSynchronize();
-
-            err = cudaMalloc((void**)&dev_octave_img_data[imgOctIndex], octave[imgOctIndex].size * sizeof(float));
+            err = cudaMalloc((void**)&dev_octave_img_data[img_oct_index], octave[img_oct_index].size * sizeof(float));
             if (err != cudaSuccess){
                 std::cout<<cudaGetErrorString(err)<<std::endl;
                 exit(-1);
             }
 
-            cudaMemcpy(dev_octave_img_data[imgOctIndex], octave[imgOctIndex].data, octave[imgOctIndex].size*sizeof(float), cudaMemcpyHostToDevice);
-            imageDataRefCopy<<<1,1>>>(*dev_octave_img, imgOctIndex, dev_octave_img_data[imgOctIndex]);
+            err = cudaMemcpy(dev_octave_img_data[img_oct_index], octave[img_oct_index].data, octave[img_oct_index].size*sizeof(float), cudaMemcpyHostToDevice);
+            if (err != cudaSuccess) {
+                std::cerr << "cudaMemcpy failed!" << std::endl;
+            }
+            image_data_ref_copy<<<1,1>>>(*dev_octave_img, img_oct_index, dev_octave_img_data[img_oct_index]);
             cudaDeviceSynchronize();
         }
         for (int j = 1; j < dog_pyramid.imgs_per_octave-1; j++) {
             const Image& img = octave[j];
-            dim3 threadsPerBlock(16, 16);
-            dim3 numBlocks((img.width + threadsPerBlock.x - 1) / threadsPerBlock.x, 
-                    (img.height + threadsPerBlock.y - 1) / threadsPerBlock.y);
+            dim3 threads_per_block(16, 16);
+            dim3 num_blocks((img.width + threads_per_block.x - 1) / threads_per_block.x, 
+                    (img.height + threads_per_block.y - 1) / threads_per_block.y);
 
-            detectKeypoints<<<numBlocks, threadsPerBlock>>>(*dev_octave_img, i, j, dog_pyramid.imgs_per_octave, contrast_thresh, edge_thresh, dev_keypoints, dev_kp_count, maxKeypoints);
+            detect_keypoints<<<num_blocks, threads_per_block>>>(*dev_octave_img, i, j, dog_pyramid.imgs_per_octave, contrast_thresh, edge_thresh, dev_keypoints, dev_kp_count, max_key_points);
             cudaDeviceSynchronize();
         }
         // freeing GPU space    
-        for(int imgOctIndex = 0; imgOctIndex< dog_pyramid.imgs_per_octave; imgOctIndex++) {
-            cudaFree(dev_octave_img_data[imgOctIndex]);
+        for(int img_oct_index = 0; img_oct_index < dog_pyramid.imgs_per_octave; img_oct_index++) {
+            cudaFree(dev_octave_img_data[img_oct_index]);
         }
         cudaFree(dev_octave_img);
 
     }
     
-    int keyPointCount = 0;
+    int key_point_count = 0;
 
-    cudaMemcpy(&keyPointCount, dev_kp_count, sizeof(int), cudaMemcpyDeviceToHost);
-    keypoints.resize(keyPointCount);
+    cudaError_t cudaStatus = cudaMemcpy(&key_point_count, dev_kp_count, sizeof(int), cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed!" << std::endl;
+    }
+    keypoints.resize(key_point_count);
 
-    cudaError_t cudaStatus = cudaMemcpy(keypoints.data(), dev_keypoints, sizeof(Keypoint) * keyPointCount, cudaMemcpyDeviceToHost);
+    cudaStatus = cudaMemcpy(keypoints.data(), dev_keypoints, sizeof(Keypoint) * key_point_count, cudaMemcpyDeviceToHost);
     if (cudaStatus != cudaSuccess) {
         std::cerr << "cudaMemcpy failed!" << std::endl;
     }
@@ -589,8 +591,9 @@ ScaleSpacePyramid generate_gradient_pyramid(const ScaleSpacePyramid& pyramid)
 }
 
 // convolve 6x with box filter
-void smooth_histogram(float hist[N_BINS])
+__device__ void smooth_histogram(float hist[N_BINS])
 {
+    printf("smooth_histogram\n");
     float tmp_hist[N_BINS];
     // can't do parallelization here, small number of iterations
     for (int i = 0; i < 6; i++) {
@@ -605,161 +608,163 @@ void smooth_histogram(float hist[N_BINS])
     }
 }
 
-std::vector<float> find_keypoint_orientations(Keypoint& kp, 
-                                              const ScaleSpacePyramid& grad_pyramid,
-                                              float lambda_ori, float lambda_desc)
+__device__ int find_keypoint_orientations(Keypoint& kp, 
+                                          const Image& img_grad,
+                                          float lambda_ori, float lambda_desc,
+                                          float* orientations, int max_orientations)
 {
-    float pix_dist = MIN_PIX_DIST * std::pow(2, kp.octave);
-    const Image& img_grad = grad_pyramid.octaves[kp.octave][kp.scale];
-
+    printf("find_keypoint_orientations\n");
+    printf("%d\n", img_grad.width);
+    float pix_dist = MIN_PIX_DIST * powf(2, kp.octave);
     // discard kp if too close to image borders 
-    float min_dist_from_border = std::min({kp.x, kp.y, pix_dist*img_grad.width-kp.x,
-                                           pix_dist*img_grad.height-kp.y});
-    if (min_dist_from_border <= std::sqrt(2)*lambda_desc*kp.sigma) {
-        return {};
+    float min_dist_from_border = min(min(min(kp.x, kp.y), pix_dist * img_grad.width - kp.x), pix_dist * img_grad.height - kp.y);
+    if (min_dist_from_border <= sqrtf(2.0f) * lambda_desc * kp.sigma) {
+        return 0;
     }
 
-    float hist[N_BINS] = {};
+    float hist[N_BINS] = {0};
     int bin;
     float gx, gy, grad_norm, weight, theta;
     float patch_sigma = lambda_ori * kp.sigma;
     float patch_radius = 3 * patch_sigma;
-    int x_start = std::round((kp.x - patch_radius)/pix_dist);
-    int x_end = std::round((kp.x + patch_radius)/pix_dist);
-    int y_start = std::round((kp.y - patch_radius)/pix_dist);
-    int y_end = std::round((kp.y + patch_radius)/pix_dist);
+    int x_start = rintf((kp.x - patch_radius) / pix_dist);
+    int x_end = rintf((kp.x + patch_radius) / pix_dist);
+    int y_start = rintf((kp.y - patch_radius) / pix_dist);
+    int y_end = rintf((kp.y + patch_radius) / pix_dist);
 
     // accumulate gradients in orientation histogram
     
-    // #pragma omp parallel for collapse(2) num_threads(16) 
-    // increasing the processing time due to critical region
+    // can't do parallelization here, small number of iterations
     for (int x = x_start; x <= x_end; x++) {
         for (int y = y_start; y <= y_end; y++) {
-            gx = img_grad.get_pixel(x, y, 0);
-            gy = img_grad.get_pixel(x, y, 1);
-            grad_norm = std::sqrt(gx*gx + gy*gy);
-            weight = std::exp(-(std::pow(x*pix_dist-kp.x, 2)+std::pow(y*pix_dist-kp.y, 2))
-                              /(2*patch_sigma*patch_sigma));
-            theta = std::fmod(std::atan2(gy, gx)+2*M_PI, 2*M_PI);
-            bin = (int)std::round(N_BINS/(2*M_PI)*theta) % N_BINS;
-            // #pragma omp critical 
-            {
-                hist[bin] += weight * grad_norm;
-            }
+            printf("before get pixel\n");
+            gx = dev_get_pixel(img_grad, x, y, 0);
+            gy = dev_get_pixel(img_grad, x, y, 1);
+            printf("after get pixel\n");
+            grad_norm = sqrtf(gx*gx + gy*gy);
+            weight = expf(-((x*pix_dist - kp.x) * (x*pix_dist - kp.x) + (y*pix_dist - kp.y) * (y*pix_dist - kp.y))
+                          / (2.0f * patch_sigma * patch_sigma));
+            theta = fmodf(atan2f(gy, gx) + 2 * M_PI, 2 * M_PI);
+            bin = (int)(rintf(N_BINS / (2 * M_PI) * theta)) % N_BINS;
+            hist[bin] += weight * grad_norm;
         }
     }
+
+    printf("before smooth hist\n");
 
     smooth_histogram(hist);
 
     // extract reference orientations
-    float ori_thresh = 0.8, ori_max = 0;
-    std::vector<float> orientations;
-    // can't do parallelization here, small number of iterations
+    float ori_thresh = 0.8f, ori_max = 0.0f;
+    int num_orientations = 0;
     for (int j = 0; j < N_BINS; j++) {
         if (hist[j] > ori_max) {
             ori_max = hist[j];
         }
     }
-    // can't do parallelization here, small number of iterations
     for (int j = 0; j < N_BINS; j++) {
         if (hist[j] >= ori_thresh * ori_max) {
-            float prev = hist[(j-1+N_BINS)%N_BINS], next = hist[(j+1)%N_BINS];
+            float prev = hist[(j - 1 + N_BINS) % N_BINS];
+            float next = hist[(j + 1) % N_BINS];
             if (prev > hist[j] || next > hist[j])
                 continue;
-            float theta = 2*M_PI*(j+1)/N_BINS + M_PI/N_BINS*(prev-next)/(prev-2*hist[j]+next);
-            orientations.push_back(theta);
+            float theta = 2 * M_PI * (j + 1) / N_BINS + M_PI / N_BINS * (prev - next) / (prev - 2 * hist[j] + next);
+            if (num_orientations < max_orientations) {
+                orientations[num_orientations++] = theta;
+            }
         }
     }
-    return orientations;
+    printf("find_keypoint_orientations func done\n");
+    return num_orientations;
 }
 
-void update_histograms(float hist[N_HIST][N_HIST][N_ORI], float x, float y,
+__device__ void update_histograms(float hist[N_HIST][N_HIST][N_ORI], float x, float y,
                        float contrib, float theta_mn, float lambda_desc)
 {
     float x_i, y_j;
     // can't do parallelization here, small number of iterations
     for (int i = 1; i <= N_HIST; i++) {
-        x_i = (i-(1+(float)N_HIST)/2) * 2*lambda_desc/N_HIST;
-        if (std::abs(x_i-x) > 2*lambda_desc/N_HIST)
+        x_i = (i - (1 + (float)N_HIST) / 2) * 2 * lambda_desc / N_HIST;
+        if (fabs(x_i - x) > 2 * lambda_desc / N_HIST)
             continue;
         for (int j = 1; j <= N_HIST; j++) {
-            y_j = (j-(1+(float)N_HIST)/2) * 2*lambda_desc/N_HIST;
-            if (std::abs(y_j-y) > 2*lambda_desc/N_HIST)
+            y_j = (j - (1 + (float)N_HIST) / 2) * 2 * lambda_desc / N_HIST;
+            if (fabs(y_j - y) > 2 * lambda_desc / N_HIST)
                 continue;
-            
-            float hist_weight = (1 - N_HIST*0.5/lambda_desc*std::abs(x_i-x))
-                               *(1 - N_HIST*0.5/lambda_desc*std::abs(y_j-y));
+
+            float hist_weight = (1 - N_HIST * 0.5 / lambda_desc * fabs(x_i - x))
+                                * (1 - N_HIST * 0.5 / lambda_desc * fabs(y_j - y));
 
             for (int k = 1; k <= N_ORI; k++) {
-                float theta_k = 2*M_PI*(k-1)/N_ORI;
-                float theta_diff = std::fmod(theta_k-theta_mn+2*M_PI, 2*M_PI);
-                if (std::abs(theta_diff) >= 2*M_PI/N_ORI)
+                float theta_k = 2 * M_PI * (k - 1) / N_ORI;
+                float theta_diff = fmodf(theta_k - theta_mn + 2 * M_PI, 2 * M_PI);
+                if (fabs(theta_diff) >= 2 * M_PI / N_ORI)
                     continue;
-                float bin_weight = 1 - N_ORI*0.5/M_PI*std::abs(theta_diff);
-                hist[i-1][j-1][k-1] += hist_weight*bin_weight*contrib;
+                float bin_weight = 1 - N_ORI * 0.5 / M_PI * fabs(theta_diff);
+                hist[i-1][j-1][k-1] += hist_weight * bin_weight * contrib;
             }
         }
     }
 }
 
-void hists_to_vec(float histograms[N_HIST][N_HIST][N_ORI], std::array<uint8_t, 128>& feature_vec)
+__device__ void hists_to_vec(float histograms[N_HIST][N_HIST][N_ORI], uint8_t feature_vec[128])
 {
-    int size = N_HIST*N_HIST*N_ORI;
+    int size = N_HIST * N_HIST * N_ORI;
     float *hist = reinterpret_cast<float *>(histograms);
 
     float norm = 0;
     for (int i = 0; i < size; i++) {
         norm += hist[i] * hist[i];
     }
-    norm = std::sqrt(norm);
+    norm = sqrtf(norm);
+
     float norm2 = 0;
     for (int i = 0; i < size; i++) {
-        hist[i] = std::min(hist[i], 0.2f*norm);
+        hist[i] = min(hist[i], 0.2f * norm);
         norm2 += hist[i] * hist[i];
     }
-    norm2 = std::sqrt(norm2);
+    norm2 = sqrtf(norm2);
+
     for (int i = 0; i < size; i++) {
-        float val = std::floor(512*hist[i]/norm2);
-        feature_vec[i] = std::min((int)val, 255);
+        float val = floorf(512 * hist[i] / norm2);
+        feature_vec[i] = min((int)val, 255);
     }
 }
 
-void compute_keypoint_descriptor(Keypoint& kp, float theta,
-                                 const ScaleSpacePyramid& grad_pyramid,
+
+__device__ void compute_keypoint_descriptor(Keypoint& kp, float theta,
+                                 const Image& img_grad,
                                  float lambda_desc)
 {
-    float pix_dist = MIN_PIX_DIST * std::pow(2, kp.octave);
-    const Image& img_grad = grad_pyramid.octaves[kp.octave][kp.scale];
+    printf("compute_keypoint_descriptor \n");
+    float pix_dist = MIN_PIX_DIST * powf(2, kp.octave);
     float histograms[N_HIST][N_HIST][N_ORI] = {{{0}}};
 
     //find start and end coords for loops over image patch
-    float half_size = std::sqrt(2)*lambda_desc*kp.sigma*(N_HIST+1.)/N_HIST;
-    int x_start = std::round((kp.x-half_size) / pix_dist);
-    int x_end = std::round((kp.x+half_size) / pix_dist);
-    int y_start = std::round((kp.y-half_size) / pix_dist);
-    int y_end = std::round((kp.y+half_size) / pix_dist);
+    float half_size = sqrtf(2) * lambda_desc * kp.sigma * (N_HIST + 1) / N_HIST;
+    int x_start = rintf((kp.x - half_size) / pix_dist);
+    int x_end = rintf((kp.x + half_size) / pix_dist);
+    int y_start = rintf((kp.y - half_size) / pix_dist);
+    int y_end = rintf((kp.y + half_size) / pix_dist);
 
-    float cos_t = std::cos(theta), sin_t = std::sin(theta);
+    float cos_t = cosf(theta), sin_t = sinf(theta);
     float patch_sigma = lambda_desc * kp.sigma;
-    //accumulate samples into histograms
-    #pragma omp parallel for collapse(2) num_threads(16)
+    // accumulate samples into histograms
+    // can't do parallelization here, small number of iterations
     for (int m = x_start; m <= x_end; m++) {
         for (int n = y_start; n <= y_end; n++) {
             // find normalized coords w.r.t. kp position and reference orientation
-            float x = ((m*pix_dist - kp.x)*cos_t
-                      +(n*pix_dist - kp.y)*sin_t) / kp.sigma;
-            float y = (-(m*pix_dist - kp.x)*sin_t
-                       +(n*pix_dist - kp.y)*cos_t) / kp.sigma;
+            float x = ((m * pix_dist - kp.x) * cos_t + (n * pix_dist - kp.y) * sin_t) / kp.sigma;
+            float y = (-(m * pix_dist - kp.x) * sin_t + (n * pix_dist - kp.y) * cos_t) / kp.sigma;
 
-            // verify (x, y) is inside the description patch
-            if (std::max(std::abs(x), std::abs(y)) > lambda_desc*(N_HIST+1.)/N_HIST)
+            if (max(fabs(x), fabs(y)) > lambda_desc * (N_HIST + 1.) / N_HIST)
                 continue;
 
-            float gx = img_grad.get_pixel(m, n, 0), gy = img_grad.get_pixel(m, n, 1);
-            float theta_mn = std::fmod(std::atan2(gy, gx)-theta+4*M_PI, 2*M_PI);
-            float grad_norm = std::sqrt(gx*gx + gy*gy);
-            float weight = std::exp(-(std::pow(m*pix_dist-kp.x, 2)+std::pow(n*pix_dist-kp.y, 2))
-                                    /(2*patch_sigma*patch_sigma));
+            float gx = dev_get_pixel(img_grad, m, n, 0), gy = dev_get_pixel(img_grad, m, n, 1);
+            float theta_mn = fmodf(atan2f(gy, gx) - theta + 4 * M_PI, 2 * M_PI);
+            float grad_norm = sqrtf(gx * gx + gy * gy);
+            float weight = expf(-(powf(m * pix_dist - kp.x, 2) + powf(n * pix_dist - kp.y, 2))
+                                    / (2 * patch_sigma * patch_sigma));
             float contribution = weight * grad_norm;
 
             update_histograms(histograms, x, y, contribution, theta_mn, lambda_desc);
@@ -767,9 +772,118 @@ void compute_keypoint_descriptor(Keypoint& kp, float theta,
     }
 
     // build feature vector (descriptor) from histograms
-    hists_to_vec(histograms, kp.descriptor);
+    uint8_t descriptor[128];
+    hists_to_vec(histograms, descriptor);
 }
 
+__global__ void set_device_image_size(Image* img, int width, int height, int channels) {
+    img->width = width;
+    img->height = height;
+    img->channels = channels;
+    img->size = width * height * channels;
+}
+
+__global__ void image_data_ref_copy(Image* img, float* data) {
+    img->data = data;
+}
+
+__global__ void process_keypoints(Keypoint *tmp_kps, int num_kps, Image** grad_pyramid,
+                                  float lambda_ori, float lambda_desc, Keypoint *output_kps, int *output_index) {
+
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= num_kps) return;
+
+    const Image& img_grad = *grad_pyramid[tmp_kps[i].octave * N_OCT + tmp_kps[i].scale];
+
+    const int max_orientations = 10;
+    float orientations[max_orientations];
+    int num_orientations = find_keypoint_orientations(tmp_kps[i], img_grad,
+                                                      lambda_ori, lambda_desc,
+                                                      orientations, max_orientations);
+    printf("find_keypoint_orientations done \n");
+    for (int j = 0; j < num_orientations; j++) {
+        Keypoint kp = tmp_kps[i];
+        compute_keypoint_descriptor(kp, orientations[j], img_grad, lambda_desc);
+
+        int idx = atomicAdd(output_index, 1);
+        output_kps[idx] = kp;
+    }
+}
+
+void find_and_compute_kp_descriptors(vector<Keypoint>& tmp_kps, vector<Keypoint>& kps, ScaleSpacePyramid& grad_pyramid, float lambda_ori, float lambda_desc) {
+    int num_kps = tmp_kps.size();
+    printf("find_and_compute_kp_descriptors \n");
+    Keypoint *device_tmp_kps;
+    cudaMalloc(&device_tmp_kps, sizeof(Keypoint) * num_kps);
+    cudaMemcpy(device_tmp_kps, tmp_kps.data(), sizeof(Keypoint) * num_kps, cudaMemcpyHostToDevice);
+
+    int num_octaves = grad_pyramid.num_octaves;
+    int imgs_per_octave = grad_pyramid.imgs_per_octave;
+
+    Image** dev_grad_pyramid;
+    cudaMalloc(&dev_grad_pyramid, num_octaves * imgs_per_octave * sizeof(Image*));
+
+    float** dev_img_data;
+    cudaMalloc(&dev_img_data, num_octaves * imgs_per_octave * sizeof(float*));
+
+    for (int i = 0; i < num_octaves; i++) {
+        for (int j = 0; j < imgs_per_octave; j++) {
+            Image* dev_img;
+            cudaMalloc(&dev_img, sizeof(Image));
+            float* img_data;
+            cudaMalloc(&img_data, grad_pyramid.octaves[i][j].size * sizeof(float));
+            cudaMemcpy(img_data, grad_pyramid.octaves[i][j].data, grad_pyramid.octaves[i][j].size * sizeof(float), cudaMemcpyHostToDevice);
+
+            set_device_image_size<<<1, 1>>>(dev_img, grad_pyramid.octaves[i][j].width, grad_pyramid.octaves[i][j].height, grad_pyramid.octaves[i][j].channels);
+            cudaDeviceSynchronize();
+
+            image_data_ref_copy<<<1, 1>>>(dev_img, img_data);
+            cudaDeviceSynchronize();
+
+            cudaMemcpy(&dev_grad_pyramid[i * imgs_per_octave + j], &dev_img, sizeof(Image*), cudaMemcpyHostToDevice);
+            cudaMemcpy(&dev_img_data[i * imgs_per_octave + j], &img_data, sizeof(float*), cudaMemcpyHostToDevice);
+        }
+    }
+
+    printf("copy done\n");
+    
+    int max_key_points = 10000;
+    Keypoint *dev_output_kps;
+    cudaMalloc(&dev_output_kps, sizeof(Keypoint) * max_key_points);
+    int *dev_key_point_count;
+    cudaMalloc(&dev_key_point_count, sizeof(int));
+    cudaMemset(dev_key_point_count, 0, sizeof(int));
+
+    const int threads_per_block = 256;
+    const int num_blocks = (num_kps + threads_per_block - 1) / threads_per_block;
+    process_keypoints<<<num_blocks, threads_per_block>>>(device_tmp_kps, num_kps, dev_grad_pyramid,
+                                                         lambda_ori, lambda_desc, dev_output_kps, dev_key_point_count);
+    cudaDeviceSynchronize();
+
+    // after kernel execution, copy the keypoints back to host
+    int key_point_count = 0;
+    cudaMemcpy(&key_point_count, dev_key_point_count, sizeof(int), cudaMemcpyDeviceToHost);
+
+    kps.resize(key_point_count);
+    
+    cudaMemcpy(kps.data(), dev_output_kps, sizeof(Keypoint) * key_point_count, cudaMemcpyDeviceToHost);
+
+    cudaFree(device_tmp_kps);
+    cudaFree(dev_output_kps);
+    cudaFree(dev_key_point_count);
+    for (int i = 0; i < num_octaves; i++) {
+        for (int j = 0; j < imgs_per_octave; j++) {
+            float* img_data;
+            cudaMemcpy(&img_data, &dev_img_data[i * imgs_per_octave + j], sizeof(float*), cudaMemcpyDeviceToHost);
+            cudaFree(img_data);
+            Image* img;
+            cudaMemcpy(&img, &dev_grad_pyramid[i * imgs_per_octave + j], sizeof(Image*), cudaMemcpyDeviceToHost);
+            cudaFree(img);
+        }
+    }
+    cudaFree(dev_grad_pyramid);
+    cudaFree(dev_img_data);
+}
 
 std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sigma_min,
                                                      int num_octaves, int scales_per_octave, 
@@ -807,19 +921,19 @@ std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sig
     std::vector<Keypoint> kps;
 
     start = std::chrono::high_resolution_clock::now();
-    #pragma omp parallel for num_threads(16)
-    for (int i = 0; i< tmp_kps.size(); i++) {
-        std::vector<float> orientations = find_keypoint_orientations(tmp_kps[i], grad_pyramid,
-                                                                     lambda_ori, lambda_desc);
-        for (float theta : orientations) {
-            Keypoint kp = tmp_kps[i];
-            compute_keypoint_descriptor(kp, theta, grad_pyramid, lambda_desc);
-            #pragma omp critical
-            {
-                kps.push_back(kp);
-            }
-        }
-    }
+
+    // for (int i = 0; i< tmp_kps.size(); i++) {
+    //     std::vector<float> orientations = find_keypoint_orientations(tmp_kps[i], grad_pyramid,
+    //                                                                  lambda_ori, lambda_desc);
+    //     for (float theta : orientations) {
+    //         Keypoint kp = tmp_kps[i];
+    //         compute_keypoint_descriptor(kp, theta, grad_pyramid, lambda_desc);
+    //         kps.push_back(kp);
+    //     }
+    // }
+
+    find_and_compute_kp_descriptors(tmp_kps, kps, grad_pyramid, lambda_ori, lambda_desc);
+
     end = std::chrono::high_resolution_clock::now();
     elapsed = end - start;
     std::cout << "Time to find key points orientation and compute descriptor: " << elapsed.count() << "s" << std::endl;
@@ -837,40 +951,6 @@ std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sig
 //     return std::sqrt(dist);
 // }
 
-__device__ float euclidean_dist(uint8_t* a, uint8_t* b)
-{
-    float dist = 0;
-    for (int i = 0; i < 128; i++) {
-        int di = (int)a[i] - b[i];
-        dist += di * di;
-    }
-    return sqrt(dist);
-}
-
-__global__ void find_matches(uint8_t* a_descriptors, uint8_t* b_descriptors, int* matches, int a_size, int b_size, int desc_length, float thresh_relative, float thresh_absolute) {
-    int i = blockDim.x * blockIdx.x + threadIdx.x;
-    if (i < a_size) {
-        int nn1_idx = -1;
-        float nn1_dist = 100000000, nn2_dist = 100000000;
-        for (int j = 0; j < b_size; j++) {
-            float dist = euclidean_dist(&a_descriptors[i * desc_length], &b_descriptors[j * desc_length]);
-            if (dist < nn1_dist) {
-                nn2_dist = nn1_dist;
-                nn1_dist = dist;
-                nn1_idx = j;
-            } else if (nn1_dist <= dist && dist < nn2_dist) {
-                nn2_dist = dist;
-            }
-        }
-        if (nn1_dist < thresh_relative * nn2_dist && nn1_dist < thresh_absolute) {
-            int idx = atomicAdd(matches, 1);
-            // printf("matches[0]=%d\n", *matches);
-            // printf("idx=%d, match %d,%d\n", idx, i, nn1_idx);
-            matches[2 * idx + 1] = i;
-            matches[2 * idx + 2] = nn1_idx;
-        }
-    }
-}
 // std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
 //                                                        std::vector<Keypoint>& b,
 //                                                        float thresh_relative,
@@ -907,30 +987,39 @@ __global__ void find_matches(uint8_t* a_descriptors, uint8_t* b_descriptors, int
 //     return matches;
 // }
 
-__global__ void imageDesc(uint8_t* d_a_descriptors, int size)
+__device__ float euclidean_dist(uint8_t* a, uint8_t* b)
 {
-    
-    if (threadIdx.x == 0 && blockIdx.x == 0)
-    {
-        printf("Here at CUDA dec print\n");
-        for (int k = 0; k < size; k++) {
-            if((k<10) || k>(size-10))
-            {
-                printf("%d\n", d_a_descriptors[k*128]);
-            }       
-        }
-    } 
+    float dist = 0;
+    for (int i = 0; i < 128; i++) {
+        int di = (int)a[i] - b[i];
+        dist += di * di;
+    }
+    return sqrt(dist);
 }
-__global__ void matchPrint(int* match)
-{
-    printf("Here at CUDA match print\n");
-    if (threadIdx.x == 0 && blockIdx.x == 0)
-    {
-        for (int k = 0; k < match[0]; k++) {
-                printf("aID=%d , bID=%d\n", match[k], match[k+1]);  
+
+__global__ void find_matches(uint8_t* a_descriptors, uint8_t* b_descriptors, int* matches, int a_size, int b_size, int desc_length, float thresh_relative, float thresh_absolute) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < a_size) {
+        int nn1_idx = -1;
+        float nn1_dist = 100000000, nn2_dist = 100000000;
+        for (int j = 0; j < b_size; j++) {
+            float dist = euclidean_dist(&a_descriptors[i * desc_length], &b_descriptors[j * desc_length]);
+            if (dist < nn1_dist) {
+                nn2_dist = nn1_dist;
+                nn1_dist = dist;
+                nn1_idx = j;
+            } else if (nn1_dist <= dist && dist < nn2_dist) {
+                nn2_dist = dist;
+            }
         }
-    } 
+        if (nn1_dist < thresh_relative * nn2_dist && nn1_dist < thresh_absolute) {
+            int idx = atomicAdd(matches, 1);
+            matches[2 * idx + 1] = i;
+            matches[2 * idx + 2] = nn1_idx;
+        }
+    }
 }
+
 std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
                                                        std::vector<Keypoint>& b,
                                                        float thresh_relative,
@@ -941,9 +1030,9 @@ std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
     std::vector<std::pair<int, int>> matches;
 
     int *d_matches;
-    int maxSizeMatches = (a.size() * 2 + 1);
-    cudaMalloc(&d_matches, maxSizeMatches * sizeof(int));
-    cudaMemset(d_matches, 0, maxSizeMatches * sizeof(int));
+    int max_size_matches = (a.size() * 2 + 1);
+    cudaMalloc(&d_matches, max_size_matches * sizeof(int));
+    cudaMemset(d_matches, 0, max_size_matches * sizeof(int));
 
     uint8_t *d_a_descriptors;
     uint8_t *d_b_descriptors;
@@ -952,23 +1041,32 @@ std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
     cudaMalloc((void**)&d_a_descriptors, a.size() * desc_size * sizeof(uint8_t));
     cudaMalloc((void**)&d_b_descriptors, b.size() * desc_size * sizeof(uint8_t));
 
-    for(int i=0;i<a.size();i++)
-        cudaMemcpy(&d_a_descriptors[i*desc_size], &a[i].descriptor[0], desc_size * sizeof(uint8_t), cudaMemcpyHostToDevice);
+    cudaError_t err;
+    for(int i=0;i<a.size();i++) {
+        err = cudaMemcpy(&d_a_descriptors[i*desc_size], &a[i].descriptor[0], desc_size * sizeof(uint8_t), cudaMemcpyHostToDevice);
+        if (err != cudaSuccess) {
+            std::cerr << "cudaMemcpy failed!" << std::endl;
+        }
+    }
     
-    for(int i=0;i<b.size();i++)
-        cudaMemcpy(&d_b_descriptors[i*desc_size], &b[i].descriptor[0], desc_size * sizeof(uint8_t), cudaMemcpyHostToDevice);
+    for(int i=0;i<b.size();i++) {
+        err = cudaMemcpy(&d_b_descriptors[i*desc_size], &b[i].descriptor[0], desc_size * sizeof(uint8_t), cudaMemcpyHostToDevice);
+        if (err != cudaSuccess) {
+            std::cerr << "cudaMemcpy failed!" << std::endl;
+        }
+    }
 
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (a.size() + threadsPerBlock - 1) / threadsPerBlock;
-    find_matches<<<blocksPerGrid, threadsPerBlock>>>(d_a_descriptors, d_b_descriptors, d_matches, a.size(), b.size(), desc_size, thresh_relative, thresh_absolute);
+    int threads_per_block = 256;
+    int blocks_per_grid = (a.size() + threads_per_block - 1) / threads_per_block;
+    find_matches<<<blocks_per_grid, threads_per_block>>>(d_a_descriptors, d_b_descriptors, d_matches, a.size(), b.size(), desc_size, thresh_relative, thresh_absolute);
     cudaDeviceSynchronize();
 
-    int hostMatches[maxSizeMatches];
-    cudaMemcpy(hostMatches, d_matches, maxSizeMatches*sizeof(int), cudaMemcpyDeviceToHost);
+    int host_matches[max_size_matches];
+    cudaMemcpy(host_matches, d_matches, max_size_matches*sizeof(int), cudaMemcpyDeviceToHost);
     
-    // hostMatches[0] holds the count 
-    for(int i=1;i<hostMatches[0];i+=2)
-        matches.emplace_back(hostMatches[i], hostMatches[i+1]);
+    // host_matches[0] holds the count 
+    for(int i=1; i<host_matches[0]; i+=2)
+        matches.emplace_back(host_matches[i], host_matches[i+1]);
 
     cudaFree(d_matches);
     cudaFree(d_a_descriptors);

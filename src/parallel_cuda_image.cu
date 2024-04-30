@@ -298,7 +298,7 @@ __global__ void convolve_horizontal(const Image& img, const Image& kernel, const
     dev_set_pixel(out_img, x, y, 0, sum);
 }
 
-__global__ void setDeviceImageSize(Image* devimg, const int w, const int h, const int c){
+__global__ void set_device_imag_size(Image* devimg, const int w, const int h, const int c){
     if (threadIdx.x == 0 && blockIdx.x == 0)
     {
         devimg->width = w;
@@ -308,12 +308,12 @@ __global__ void setDeviceImageSize(Image* devimg, const int w, const int h, cons
     }
 }
 
-__global__ void setPixelKernel(Image* img, int x, int y, int c, float val) {
+__global__ void set_pixel_kernel(Image* img, int x, int y, int c, float val) {
     if (threadIdx.x == 0 && blockIdx.x == 0)
         dev_set_pixel(*img, x, y, c, val);;
 }
 
-__global__ void normPixelKernel(Image* img, float sum) {
+__global__ void norm_pixel_kernel(Image* img, float sum) {
     if (threadIdx.x == 0 && blockIdx.x == 0)
     {
         for (int k = 0; k < img->size; k++)
@@ -321,17 +321,7 @@ __global__ void normPixelKernel(Image* img, float sum) {
     }
 }
 
-__global__ void imagePrint(Image* devimg)
-{
-    if (threadIdx.x == 0 && blockIdx.x == 0)
-    {
-        for (int k = 0; k < devimg->size; k++) {
-            printf("%f\n", devimg->data[k]);
-        }
-    } 
-}
-
-__global__ void imageDataRefCopy(Image* devImg, float *srcDevImg)
+__global__ void image_data_ref_copy(Image* devImg, float *srcDevImg)
 {
     if (threadIdx.x == 0 && blockIdx.x == 0)
     {
@@ -351,7 +341,7 @@ Image gaussian_blur(const Image& img, float sigma)
       std::cout<<cudaGetErrorString(err)<<std::endl;
       exit(-1);
     }
-    setDeviceImageSize<<<1,1>>>(dev_img, img.width, img.height, img.channels);
+    set_device_imag_size<<<1,1>>>(dev_img, img.width, img.height, img.channels);
     cudaDeviceSynchronize();
 
     err = cudaMalloc((void**)&dev_img_data, img.size*sizeof(float));
@@ -361,7 +351,7 @@ Image gaussian_blur(const Image& img, float sigma)
     }
 
     cudaMemcpy(dev_img_data, img.data, img.size*sizeof(float), cudaMemcpyHostToDevice);
-    imageDataRefCopy<<<1,1>>>(dev_img, dev_img_data);
+    image_data_ref_copy<<<1,1>>>(dev_img, dev_img_data);
     cudaDeviceSynchronize();
   
     int size = std::ceil(6 * sigma);
@@ -374,20 +364,20 @@ Image gaussian_blur(const Image& img, float sigma)
 
     cudaMalloc((void**)&dev_kernel, sizeof(Image));
     cudaMalloc((void**)&dev_kernel_data, size * sizeof(float));
-    imageDataRefCopy<<<1,1>>>(dev_kernel, dev_kernel_data);
+    image_data_ref_copy<<<1,1>>>(dev_kernel, dev_kernel_data);
     cudaDeviceSynchronize();
-    setDeviceImageSize<<<1, 1>>>(dev_kernel, size, 1, 1);
+    set_device_imag_size<<<1, 1>>>(dev_kernel, size, 1, 1);
     cudaDeviceSynchronize();
 
     float sum = 0;
     for (int k = -size/2; k <= size/2; k++) {
         float val = std::exp(-(k*k) / (2*sigma*sigma));
-        setPixelKernel<<<1,1>>>(dev_kernel, center+k, 0, 0, val);
+        set_pixel_kernel<<<1,1>>>(dev_kernel, center+k, 0, 0, val);
         cudaDeviceSynchronize();
         sum += val;
     }
 
-    normPixelKernel<<<1,1>>>(dev_kernel, sum);
+    norm_pixel_kernel<<<1,1>>>(dev_kernel, sum);
     cudaDeviceSynchronize();
 
     Image filtered(img.width, img.height, 1);
@@ -396,10 +386,10 @@ Image gaussian_blur(const Image& img, float sigma)
 
     cudaMalloc((void**)&dev_temp, sizeof(Image));
     cudaMalloc((void**)&dev_temp_data, (img.width*img.height*1)*sizeof(float));
-    imageDataRefCopy<<<1,1>>>(dev_temp, dev_temp_data);
+    image_data_ref_copy<<<1,1>>>(dev_temp, dev_temp_data);
     cudaDeviceSynchronize();
 
-    setDeviceImageSize<<<1, 1>>>(dev_temp, img.width, img.height, 1);
+    set_device_imag_size<<<1, 1>>>(dev_temp, img.width, img.height, 1);
     cudaDeviceSynchronize();
 
     Image *dev_filtered;
@@ -407,21 +397,21 @@ Image gaussian_blur(const Image& img, float sigma)
 
     cudaMalloc((void**)&dev_filtered, sizeof(Image));
     cudaMalloc((void**)&dev_filtered_data, (img.width*img.height*1)*sizeof(float));
-    imageDataRefCopy<<<1,1>>>(dev_filtered, dev_filtered_data);
+    image_data_ref_copy<<<1,1>>>(dev_filtered, dev_filtered_data);
     cudaDeviceSynchronize();
 
-    setDeviceImageSize<<<1, 1>>>(dev_filtered, img.width, img.height, 1);
+    set_device_imag_size<<<1, 1>>>(dev_filtered, img.width, img.height, 1);
     cudaDeviceSynchronize();
 
     // convolve vertical
-    dim3 threadsPerBlock(16, 16); // 16x16 threads per block
-    dim3 numBlocks((img.width + threadsPerBlock.x - 1) / threadsPerBlock.x,
-                   (img.height + threadsPerBlock.y - 1) / threadsPerBlock.y);
-    convolve_vertical<<<numBlocks, threadsPerBlock>>>(*dev_img, *dev_kernel, size, center, *dev_temp);
+    dim3 threads_per_block(16, 16); // 16x16 threads per block
+    dim3 num_blocks((img.width + threads_per_block.x - 1) / threads_per_block.x,
+                   (img.height + threads_per_block.y - 1) / threads_per_block.y);
+    convolve_vertical<<<num_blocks, threads_per_block>>>(*dev_img, *dev_kernel, size, center, *dev_temp);
     cudaDeviceSynchronize();
 
     // convolve horizontal
-    convolve_horizontal<<<numBlocks, threadsPerBlock>>>(*dev_temp, *dev_kernel, size, center, *dev_filtered);
+    convolve_horizontal<<<num_blocks, threads_per_block>>>(*dev_temp, *dev_kernel, size, center, *dev_filtered);
     cudaDeviceSynchronize();
 
     cudaMemcpy(filtered.data, dev_filtered_data, filtered.size*sizeof(float), cudaMemcpyDeviceToHost);
