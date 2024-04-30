@@ -639,14 +639,15 @@ __device__ int find_keypoint_orientations(Keypoint& kp,
         for (int y = y_start; y <= y_end; y++) {
             printf("before get pixel\n");
             gx = dev_get_pixel(img_grad, x, y, 0);
-            gy = dev_get_pixel(img_grad, x, y, 1);
+            // gy = dev_get_pixel(img_grad, x, y, 1);
             printf("after get pixel\n");
-            grad_norm = sqrtf(gx*gx + gy*gy);
+            // grad_norm = sqrtf(gx*gx + gy*gy);
             weight = expf(-((x*pix_dist - kp.x) * (x*pix_dist - kp.x) + (y*pix_dist - kp.y) * (y*pix_dist - kp.y))
                           / (2.0f * patch_sigma * patch_sigma));
             theta = fmodf(atan2f(gy, gx) + 2 * M_PI, 2 * M_PI);
             bin = (int)(rintf(N_BINS / (2 * M_PI) * theta)) % N_BINS;
-            hist[bin] += weight * grad_norm;
+            // hist[bin] += weight * grad_norm;
+            hist[bin] += weight * gx;
         }
     }
 
@@ -760,14 +761,17 @@ __device__ void compute_keypoint_descriptor(Keypoint& kp, float theta,
             if (max(fabs(x), fabs(y)) > lambda_desc * (N_HIST + 1.) / N_HIST)
                 continue;
 
-            float gx = dev_get_pixel(img_grad, m, n, 0), gy = dev_get_pixel(img_grad, m, n, 1);
-            float theta_mn = fmodf(atan2f(gy, gx) - theta + 4 * M_PI, 2 * M_PI);
-            float grad_norm = sqrtf(gx * gx + gy * gy);
+            float gx = dev_get_pixel(img_grad, m, n, 0);
+            // float gy = dev_get_pixel(img_grad, m, n, 1);
+            // float theta_mn = fmodf(atan2f(gy, gx) - theta + 4 * M_PI, 2 * M_PI);
+            // float grad_norm = sqrtf(gx * gx + gy * gy);
             float weight = expf(-(powf(m * pix_dist - kp.x, 2) + powf(n * pix_dist - kp.y, 2))
                                     / (2 * patch_sigma * patch_sigma));
-            float contribution = weight * grad_norm;
+            // float contribution = weight * grad_norm;
+            float contribution = weight * gx;
 
-            update_histograms(histograms, x, y, contribution, theta_mn, lambda_desc);
+            // update_histograms(histograms, x, y, contribution, theta_mn, lambda_desc);
+            update_histograms(histograms, x, y, contribution, theta, lambda_desc);
         }
     }
 
