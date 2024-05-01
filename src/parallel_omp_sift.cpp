@@ -529,9 +529,21 @@ std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sig
     for (int i = 0; i< tmp_kps.size(); i++) {
         std::vector<float> orientations = find_keypoint_orientations(tmp_kps[i], grad_pyramid,
                                                                      lambda_ori, lambda_desc);
+        // if(i%256 == 0) {
+        //     printf("Printing Orientations\n");
+        //     for (int j = 0; j < orientations.size(); j++) {
+        //         printf("%f\n", orientations[j]);
+        //     }
+        // }
         for (float theta : orientations) {
             Keypoint kp = tmp_kps[i];
             compute_keypoint_descriptor(kp, theta, grad_pyramid, lambda_desc);
+            // if(i%256 == 0) {
+            //     printf("Printing Descriptors\n");
+            //     for (int j = 0; j < 128; j++) {
+            //         printf("%f\n", kp.descriptor[j]);
+            //     }
+            // }
             #pragma omp critical
             {
                 kps.push_back(kp);
@@ -588,6 +600,17 @@ std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
             }
         }
     }
+
+    // for (auto& m : matches) {
+    //     Keypoint& kp_a = a[m.first];
+    //     Keypoint& kp_b = b[m.second];
+    //     std::cout << "Discrete coordinates (i, j): (" << kp_a.i << ", " << kp_a.j << "), ";
+    //     std::cout << "Octave: " << kp_a.octave << ", Scale: " << kp_a.scale << std::endl;
+    //     std::cout << "Discrete coordinates (i, j): (" << kp_b.i << ", " << kp_b.j << "), ";
+    //     std::cout << "Octave: " << kp_b.octave << ", Scale: " << kp_b.scale << std::endl;
+    //     std::cout << "Euclidean dist: " << euclidean_dist(kp_a.descriptor, kp_b.descriptor) << std::endl;
+    // }
+
     return matches;
 }
 

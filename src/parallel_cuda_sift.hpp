@@ -31,7 +31,7 @@ struct Keypoint {
     float sigma;
     float extremum_val; //value of interpolated DoG extremum
     
-    std::array<uint8_t, 128> descriptor;
+    int descriptor[128];
 };
 
 struct Offsets {
@@ -61,7 +61,7 @@ const float LAMBDA_DESC = 6;
 
 // feature matching
 const float THRESH_ABSOLUTE = 350;
-const float THRESH_RELATIVE = 0.7;
+const float THRESH_RELATIVE = 0.75;
 
 ScaleSpacePyramid generate_gaussian_pyramid(const Image& img, float sigma_min=SIGMA_MIN,
                                             int num_octaves=N_OCT, int scales_per_octave=N_SPO);

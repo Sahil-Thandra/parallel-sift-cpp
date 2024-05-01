@@ -699,7 +699,7 @@ __device__ void update_histograms(float hist[N_HIST][N_HIST][N_ORI], float x, fl
     }
 }
 
-__device__ void hists_to_vec(float histograms[N_HIST][N_HIST][N_ORI], uint8_t feature_vec[128])
+__device__ void hists_to_vec(float histograms[N_HIST][N_HIST][N_ORI], int* feature_vec)
 {
     int size = N_HIST * N_HIST * N_ORI;
     float *hist = reinterpret_cast<float *>(histograms);
@@ -763,8 +763,7 @@ __device__ void compute_keypoint_descriptor(Keypoint& kp, float theta,
     }
 
     // build feature vector (descriptor) from histograms
-    uint8_t descriptor[128];
-    hists_to_vec(histograms, descriptor);
+    hists_to_vec(histograms, kp.descriptor);
 }
 
 __global__ void set_device_image_size(Image* img, int width, int height, int channels) {
@@ -791,10 +790,22 @@ __global__ void process_keypoints(Keypoint *tmp_kps, int num_kps, Image** grad_p
     int num_orientations = find_keypoint_orientations(tmp_kps[i], img_grad,
                                                       lambda_ori, lambda_desc,
                                                       orientations, max_orientations);
+    // if(i%256 == 0) {
+    //     printf("Printing Orientations\n");
+    //     for (int j = 0; j < num_orientations; j++) {
+    //         printf("%f\n", orientations[j]);
+    //     }
+    // }
+    
     for (int j = 0; j < num_orientations; j++) {
         Keypoint kp = tmp_kps[i];
         compute_keypoint_descriptor(kp, orientations[j], img_grad, lambda_desc);
-
+        // if(i%256 == 0) {
+        //     printf("Printing Descriptors\n");
+        //     for (int j = 0; j < 128; j++) {
+        //         printf("%d\n", kp.descriptor[j]);
+        //     }
+        // }
         int idx = atomicAdd(output_index, 1);
         output_kps[idx] = kp;
     }
