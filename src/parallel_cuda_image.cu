@@ -182,8 +182,7 @@ Image Image::resize(int new_w, int new_h, Interpolation method) const
 {
     Image resized(new_w, new_h, this->channels);
     float value = 0;
-    // #pragma omp parallel for collapse(3) num_threads(16) 
-    // increasing the processing time, cost of parallelization is high
+    // parallelization is increasing the processing time, cost of parallelization is high
     for (int x = 0; x < new_w; x++) {
         for (int y = 0; y < new_h; y++) {
             for (int c = 0; c < resized.channels; c++) {

@@ -80,8 +80,7 @@ ScaleSpacePyramid generate_dog_pyramid(const ScaleSpacePyramid& img_pyramid)
         // depends on the previous image
         for (int j = 1; j < img_pyramid.imgs_per_octave; j++) {
             Image diff = img_pyramid.octaves[i][j];
-            // #pragma omp parallel for num_threads(16) 
-            // increasing the processing time, cost of parallelization is high
+            // parallelization is increasing the processing time, cost of parallelization is high
             for (int pix_idx = 0; pix_idx < diff.size; pix_idx++) {
                 diff.data[pix_idx] -= img_pyramid.octaves[i][j-1].data[pix_idx];
             }
@@ -91,36 +90,6 @@ ScaleSpacePyramid generate_dog_pyramid(const ScaleSpacePyramid& img_pyramid)
 
     return dog_pyramid;
 }
-
-/* bool point_is_extremum(const std::vector<Image>& octave, int scale, int x, int y)
-{
-    const Image& img = octave[scale];
-    const Image& prev = octave[scale-1];
-    const Image& next = octave[scale+1];
-
-    bool is_min = true, is_max = true;
-    float val = img.get_pixel(x, y, 0), neighbor;
-
-    for (int dx : {-1,0,1}) {
-        for (int dy : {-1,0,1}) {
-            neighbor = prev.get_pixel(x+dx, y+dy, 0);
-            if (neighbor > val) is_max = false;
-            if (neighbor < val) is_min = false;
-
-            neighbor = next.get_pixel(x+dx, y+dy, 0);
-            if (neighbor > val) is_max = false;
-            if (neighbor < val) is_min = false;
-
-            neighbor = img.get_pixel(x+dx, y+dy, 0);
-            if (neighbor > val) is_max = false;
-            if (neighbor < val) is_min = false;
-
-            if (!is_min && !is_max) return false;
-        }
-    }
-    return true;
-}
- */
 
 __device__ float dev_get_pixel(const Image& img, int x, int y, int c) {
     if (x < 0)
@@ -167,56 +136,6 @@ __device__ bool point_is_extremum(const Image* octave, int scale, int x, int y)
 // fit a quadratic near the discrete extremum,
 // update the keypoint (interpolated) extremum value
 // and return offsets of the interpolated extremum from the discrete extremum
-
-/* std::tuple<float, float, float> fit_quadratic(Keypoint& kp,
-                                              const std::vector<Image>& octave,
-                                              int scale)
-{
-    const Image& img = octave[scale];
-    const Image& prev = octave[scale-1];
-    const Image& next = octave[scale+1];
-
-    float g1, g2, g3;
-    float h11, h12, h13, h22, h23, h33;
-    int x = kp.i, y = kp.j;
-
-    // gradient 
-    g1 = (next.get_pixel(x, y, 0) - prev.get_pixel(x, y, 0)) * 0.5;
-    g2 = (img.get_pixel(x+1, y, 0) - img.get_pixel(x-1, y, 0)) * 0.5;
-    g3 = (img.get_pixel(x, y+1, 0) - img.get_pixel(x, y-1, 0)) * 0.5;
-
-    // hessian
-    h11 = next.get_pixel(x, y, 0) + prev.get_pixel(x, y, 0) - 2*img.get_pixel(x, y, 0);
-    h22 = img.get_pixel(x+1, y, 0) + img.get_pixel(x-1, y, 0) - 2*img.get_pixel(x, y, 0);
-    h33 = img.get_pixel(x, y+1, 0) + img.get_pixel(x, y-1, 0) - 2*img.get_pixel(x, y, 0);
-    h12 = (next.get_pixel(x+1, y, 0) - next.get_pixel(x-1, y, 0)
-          -prev.get_pixel(x+1, y, 0) + prev.get_pixel(x-1, y, 0)) * 0.25;
-    h13 = (next.get_pixel(x, y+1, 0) - next.get_pixel(x, y-1, 0)
-          -prev.get_pixel(x, y+1, 0) + prev.get_pixel(x, y-1, 0)) * 0.25;
-    h23 = (img.get_pixel(x+1, y+1, 0) - img.get_pixel(x+1, y-1, 0)
-          -img.get_pixel(x-1, y+1, 0) + img.get_pixel(x-1, y-1, 0)) * 0.25;
-    
-    // invert hessian
-    float hinv11, hinv12, hinv13, hinv22, hinv23, hinv33;
-    float det = h11*h22*h33 - h11*h23*h23 - h12*h12*h33 + 2*h12*h13*h23 - h13*h13*h22;
-    hinv11 = (h22*h33 - h23*h23) / det;
-    hinv12 = (h13*h23 - h12*h33) / det;
-    hinv13 = (h12*h23 - h13*h22) / det;
-    hinv22 = (h11*h33 - h13*h13) / det;
-    hinv23 = (h12*h13 - h11*h23) / det;
-    hinv33 = (h11*h22 - h12*h12) / det;
-
-    // find offsets of the interpolated extremum from the discrete extremum
-    float offset_s = -hinv11*g1 - hinv12*g2 - hinv13*g3;
-    float offset_x = -hinv12*g1 - hinv22*g2 - hinv23*g3;
-    float offset_y = -hinv13*g1 - hinv23*g3 - hinv33*g3;
-
-    float interpolated_extrema_val = img.get_pixel(x, y, 0)
-                                   + 0.5*(g1*offset_s + g2*offset_x + g3*offset_y);
-    kp.extremum_val = interpolated_extrema_val;
-    return std::make_tuple(offset_s, offset_x, offset_y);
-} */
-
 __device__ Offsets fit_quadratic(Keypoint& kp, const Image* octave, int scale)
 {
     Offsets kp_offsets;
@@ -265,25 +184,6 @@ __device__ Offsets fit_quadratic(Keypoint& kp, const Image* octave, int scale)
     return kp_offsets;
 }
 
-/* bool point_is_on_edge(const Keypoint& kp, const std::vector<Image>& octave, float edge_thresh=C_EDGE)
-{
-    const Image& img = octave[kp.scale];
-    float h11, h12, h22;
-    int x = kp.i, y = kp.j;
-    h11 = img.get_pixel(x+1, y, 0) + img.get_pixel(x-1, y, 0) - 2*img.get_pixel(x, y, 0);
-    h22 = img.get_pixel(x, y+1, 0) + img.get_pixel(x, y-1, 0) - 2*img.get_pixel(x, y, 0);
-    h12 = (img.get_pixel(x+1, y+1, 0) - img.get_pixel(x+1, y-1, 0)
-          -img.get_pixel(x-1, y+1, 0) + img.get_pixel(x-1, y-1, 0)) * 0.25;
-
-    float det_hessian = h11*h22 - h12*h12;
-    float tr_hessian = h11 + h22;
-    float edgeness = tr_hessian*tr_hessian / det_hessian;
-    if (edgeness > std::pow(edge_thresh+1, 2)/edge_thresh)
-        return true;
-    else
-        return false;
-} */
-
 __device__ bool point_is_on_edge(const Keypoint& kp, const Image* octave, float edge_thresh = C_EDGE)
 {
     const Image& img = octave[kp.scale];
@@ -305,15 +205,6 @@ __device__ bool point_is_on_edge(const Keypoint& kp, const Image* octave, float 
     return edgeness > (pow(edge_thresh + 1, 2) / edge_thresh);
 }
 
-/* void find_input_img_coords(Keypoint& kp, float offset_s, float offset_x, float offset_y,
-                                   float sigma_min=SIGMA_MIN,
-                                   float min_pix_dist=MIN_PIX_DIST, int n_spo=N_SPO)
-{
-    kp.sigma = std::pow(2, kp.octave) * sigma_min * std::pow(2, (offset_s+kp.scale)/n_spo);
-    kp.x = min_pix_dist * std::pow(2, kp.octave) * (offset_x+kp.i);
-    kp.y = min_pix_dist * std::pow(2, kp.octave) * (offset_y+kp.j);
-} */
-
 __device__ void find_input_img_coords(Keypoint& kp, float offset_s, float offset_x, float offset_y,
                                       float sigma_min = SIGMA_MIN,
                                       float min_pix_dist = MIN_PIX_DIST, int n_spo = N_SPO)
@@ -322,37 +213,6 @@ __device__ void find_input_img_coords(Keypoint& kp, float offset_s, float offset
     kp.x = min_pix_dist * powf(2, kp.octave) * (offset_x + kp.i);
     kp.y = min_pix_dist * powf(2, kp.octave) * (offset_y + kp.j);
 }
-
-/* bool refine_or_discard_keypoint(Keypoint& kp, const std::vector<Image>& octave,
-                                 float contrast_thresh, float edge_thresh)
-{
-    int k = 0;
-    bool kp_is_valid = false; 
-    while (k++ < MAX_REFINEMENT_ITERS) {
-        std::tuple<float, float, float> result = fit_quadratic(kp, octave, kp.scale);
-        float offset_s = std::get<0>(result);
-        float offset_x = std::get<1>(result);
-        float offset_y = std::get<2>(result);
-
-        float max_offset = std::max({std::abs(offset_s),
-                                     std::abs(offset_x),
-                                     std::abs(offset_y)});
-        // find nearest discrete coordinates
-        kp.scale += std::round(offset_s);
-        kp.i += std::round(offset_x);
-        kp.j += std::round(offset_y);
-        if (kp.scale >= octave.size()-1 || kp.scale < 1)
-            break;
-
-        bool valid_contrast = std::abs(kp.extremum_val) > contrast_thresh;
-        if (max_offset < 0.6 && valid_contrast && !point_is_on_edge(kp, octave, edge_thresh)) {
-            find_input_img_coords(kp, offset_s, offset_x, offset_y);
-            kp_is_valid = true;
-            break;
-        }
-    }
-    return kp_is_valid;
-} */
 
 __device__ float device_abs(float x) {
     return x < 0 ? -x : x;
@@ -393,41 +253,6 @@ __device__ bool refine_or_discard_keypoint(Keypoint& kp, const Image* octave, in
     }
     return kp_is_valid;
 }
-
-/* std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float contrast_thresh,
-                                     float edge_thresh)
-{
-    std::vector<Keypoint> keypoints;
-    // #pragma omp parallel for num_threads(16) 
-    // increasing the processing time, cost of parallelization is high
-    for (int i = 0; i < dog_pyramid.num_octaves; i++) {
-        const std::vector<Image>& octave = dog_pyramid.octaves[i];
-        // #pragma omp parallel for num_threads(16)
-        for (int j = 1; j < dog_pyramid.imgs_per_octave-1; j++) {
-            const Image& img = octave[j];
-            #pragma omp parallel for collapse(2) num_threads(16)
-            for (int x = 1; x < img.width-1; x++) {
-                for (int y = 1; y < img.height-1; y++) {
-                    if (std::abs(img.get_pixel(x, y, 0)) < 0.8*contrast_thresh) {
-                        continue;
-                    }
-                    if (point_is_extremum(octave, j, x, y)) {
-                        Keypoint kp = {x, y, i, j, -1, -1, -1, -1};
-                        bool kp_is_valid = refine_or_discard_keypoint(kp, octave, contrast_thresh,
-                                                                      edge_thresh);
-                        if (kp_is_valid) {
-                            #pragma omp critical 
-                            {
-                                keypoints.push_back(kp);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return keypoints;
-} */
 
 __global__ void detect_keypoints(Image* octave, int octave_index, int img_index, int imgs_per_octave, float contrast_thresh, float edge_thresh, Keypoint* keypoints, int* keypoint_count, int max_keypoints) {
 
@@ -478,7 +303,7 @@ std::vector<Keypoint> find_keypoints(const ScaleSpacePyramid& dog_pyramid, float
     cudaMemset(dev_kp_count, 0, sizeof(int));
 
     Keypoint* dev_keypoints;
-    int max_key_points = 10000;
+    int max_key_points = 100000;
     cudaMalloc(&dev_keypoints, sizeof(Keypoint) * max_key_points);
 
     std::vector<Keypoint> keypoints;
@@ -559,18 +384,15 @@ ScaleSpacePyramid generate_gradient_pyramid(const ScaleSpacePyramid& pyramid)
         pyramid.imgs_per_octave,
         std::vector<std::vector<Image>>(pyramid.num_octaves)
     };
-    // #pragma omp parallel for num_threads(16) 
-    // increasing the processing time, cost of parallelization is high
+    // parallelization is increasing the processing time, cost of parallelization is high
     for (int i = 0; i < pyramid.num_octaves; i++) {
         grad_pyramid.octaves[i].reserve(grad_pyramid.imgs_per_octave);
         int width = pyramid.octaves[i][0].width;
         int height = pyramid.octaves[i][0].height;
-        // #pragma omp parallel for num_threads(16)
         for (int j = 0; j < pyramid.imgs_per_octave; j++) {
             Image grad(width, height, 2);
             float gx, gy;
-            // #pragma omp parallel for collapse(2) num_threads(16) 
-            // increasing the processing time, cost of parallelization is high
+            // parallelization is increasing the processing time, cost of parallelization is high
             for (int x = 1; x < grad.width-1; x++) {
                 for (int y = 1; y < grad.height-1; y++) {
                     gx = (pyramid.octaves[i][j].get_pixel(x+1, y, 0)
@@ -581,10 +403,7 @@ ScaleSpacePyramid generate_gradient_pyramid(const ScaleSpacePyramid& pyramid)
                     grad.set_pixel(x, y, 1, gy);
                 }
             }
-            // #pragma omp critical
-            {
-                grad_pyramid.octaves[i].push_back(grad);
-            }
+            grad_pyramid.octaves[i].push_back(grad);
         }
     }
     return grad_pyramid;
@@ -790,22 +609,10 @@ __global__ void process_keypoints(Keypoint *tmp_kps, int num_kps, Image** grad_p
     int num_orientations = find_keypoint_orientations(tmp_kps[i], img_grad,
                                                       lambda_ori, lambda_desc,
                                                       orientations, max_orientations);
-    // if(i%256 == 0) {
-    //     printf("Printing Orientations\n");
-    //     for (int j = 0; j < num_orientations; j++) {
-    //         printf("%f\n", orientations[j]);
-    //     }
-    // }
     
     for (int j = 0; j < num_orientations; j++) {
         Keypoint kp = tmp_kps[i];
         compute_keypoint_descriptor(kp, orientations[j], img_grad, lambda_desc);
-        // if(i%256 == 0) {
-        //     printf("Printing Descriptors\n");
-        //     for (int j = 0; j < 128; j++) {
-        //         printf("%d\n", kp.descriptor[j]);
-        //     }
-        // }
         int idx = atomicAdd(output_index, 1);
         output_kps[idx] = kp;
     }
@@ -920,16 +727,6 @@ std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sig
 
     start = std::chrono::high_resolution_clock::now();
 
-    // for (int i = 0; i< tmp_kps.size(); i++) {
-    //     std::vector<float> orientations = find_keypoint_orientations(tmp_kps[i], grad_pyramid,
-    //                                                                  lambda_ori, lambda_desc);
-    //     for (float theta : orientations) {
-    //         Keypoint kp = tmp_kps[i];
-    //         compute_keypoint_descriptor(kp, theta, grad_pyramid, lambda_desc);
-    //         kps.push_back(kp);
-    //     }
-    // }
-
     find_and_compute_kp_descriptors(tmp_kps, kps, grad_pyramid, lambda_ori, lambda_desc);
 
     end = std::chrono::high_resolution_clock::now();
@@ -938,52 +735,6 @@ std::vector<Keypoint> find_keypoints_and_descriptors(const Image& img, float sig
 
     return kps;
 }
-
-// float euclidean_dist(std::array<uint8_t, 128>& a, std::array<uint8_t, 128>& b)
-// {
-//     float dist = 0;
-//     for (int i = 0; i < 128; i++) {
-//         int di = (int)a[i] - b[i];
-//         dist += di * di;
-//     }
-//     return std::sqrt(dist);
-// }
-
-// std::vector<std::pair<int, int>> find_keypoint_matches(std::vector<Keypoint>& a,
-//                                                        std::vector<Keypoint>& b,
-//                                                        float thresh_relative,
-//                                                        float thresh_absolute)
-// {
-//     assert(a.size() >= 2 && b.size() >= 2);
-
-//     std::vector<std::pair<int, int>> matches;
-
-//     #pragma omp parallel for num_threads(16)
-//     for (int i = 0; i < a.size(); i++) {
-//         // find two nearest neighbours in b for current keypoint from a
-//         int nn1_idx = -1;
-//         float nn1_dist = 100000000, nn2_dist = 100000000;
-//         // can't do parallelization here, because we are trying to 
-//         // find minimum distance across iterations
-//         for (int j = 0; j < b.size(); j++) {
-//             float dist = euclidean_dist(a[i].descriptor, b[j].descriptor);
-//             if (dist < nn1_dist) {
-//                 nn2_dist = nn1_dist;
-//                 nn1_dist = dist;
-//                 nn1_idx = j;
-//             } else if (nn1_dist <= dist && dist < nn2_dist) {
-//                 nn2_dist = dist;
-//             }
-//         }
-//         if (nn1_dist < thresh_relative*nn2_dist && nn1_dist < thresh_absolute) {
-//             #pragma omp critical
-//             {
-//                 matches.push_back({i, nn1_idx});
-//             }
-//         }
-//     }
-//     return matches;
-// }
 
 __device__ float euclidean_dist(uint8_t* a, uint8_t* b)
 {
