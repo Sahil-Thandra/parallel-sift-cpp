@@ -652,7 +652,7 @@ void find_and_compute_kp_descriptors(vector<Keypoint>& tmp_kps, vector<Keypoint>
         }
     }
     
-    int max_key_points = 10000;
+    int max_key_points = 100000;
     Keypoint *dev_output_kps;
     cudaMalloc(&dev_output_kps, sizeof(Keypoint) * max_key_points);
     int *dev_key_point_count;
