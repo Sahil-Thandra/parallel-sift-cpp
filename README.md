@@ -32,23 +32,44 @@ Result:
 ![Matching result](./imgs/book_matches.jpg)
 
 ## Build and run the examples
+
 ### Build
 ```bash
 $ make all
 ```
 The executables will be in root directory
 
-### Run
+### Run Original Sequential Implementation
 Find image keypoints, draw them and save the result:
 ```bash
 $ ./find_keypoints /imgs/book_rotated.jpg result.jpg
 ```
 
-![Keypoints result](./imgs/book_keypoints.jpg)
-
 Find keypoints in two images and match them, draw matches and save the result:
 ```bash
 $ ./match_features imgs/book_rotated.jpg imgs/book_in_scene.jpg result.jpg
+```
+
+### Run OpenMP Implementation
+Find image keypoints, draw them and save the result:
+```bash
+$ ./find_keypoints_omp /imgs/book_rotated.jpg result.jpg
+```
+
+Find keypoints in two images and match them, draw matches and save the result:
+```bash
+$ ./match_features_omp imgs/book_rotated.jpg imgs/book_in_scene.jpg result.jpg
+```
+
+### Run Cuda Implementation
+Find image keypoints, draw them and save the result:
+```bash
+$ ./find_keypoints_cuda /imgs/book_rotated.jpg result.jpg
+```
+
+Find keypoints in two images and match them, draw matches and save the result:
+```bash
+$ ./match_features_cuda imgs/book_rotated.jpg imgs/book_in_scene.jpg result.jpg
 ```
 
 ## Useful links
