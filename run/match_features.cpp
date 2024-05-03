@@ -41,6 +41,6 @@ int main(int argc, char *argv[])
     Image result = sift::draw_matches(a, b, kps_a, kps_b, matches);
     result.save(argv[3]);
     
-    std::cout << "Found " << matches.size() << " feature matches. Output image is saved\n";
+    std::cout << "Output image is saved\n";
     return 0;
 }

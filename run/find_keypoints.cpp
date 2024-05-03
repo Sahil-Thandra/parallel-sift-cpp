@@ -28,6 +28,6 @@ int main(int argc, char *argv[])
     Image result = sift::draw_keypoints(img, kps);
     result.save(argv[2]);
 
-    std::cout << "Found " << kps.size() << " keypoints. Output image is saved\n";
+    std::cout << "Output image is saved\n";
     return 0;
 }
